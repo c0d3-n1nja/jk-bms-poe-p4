@@ -6,8 +6,8 @@
  *
  * - 115200 8N1, standard Modbus RTU framing, CRC16-MODBUS (poly 0xA001)
  * - Function 0x03 (read holding registers); writes are not used
- * - Register map (byte-address blocks): configuration @0x1000, device/feature
- *   flags @0x1108, cell data @0x1200, live status @0x128A, identity @0x1400
+ * - Register map (byte-address blocks): configuration @0x1000,
+ *   cell data @0x1200, live status @0x128A, identity @0x1400
  *
  * Multi-byte values are big-endian (Modbus standard: high word first,
  * high byte first). Temperatures are 0.1 deg C signed, voltages mV,
@@ -39,8 +39,6 @@
 
 #define JKBM_REGION_CONFIG_START 0x1000u
 #define JKBM_REGION_CONFIG_BYTES 136u     /* 0x1000..0x1087 protections + switches */
-#define JKBM_REGION_DEV_START    0x1108u
-#define JKBM_REGION_DEV_BYTES    18u      /* 0x1108..0x1119 addr, flags, sleep */
 #define JKBM_REGION_STATUS_START 0x128Au
 #define JKBM_REGION_STATUS_BYTES 116u     /* 0x128A..0x12FD power, temps, SOC */
 #define JKBM_REGION_IDENT_START  0x1400u
@@ -130,10 +128,6 @@ typedef struct {
     /* Miscellaneous */
     float    current_calibration;            /* A (not in PB map, always 0) */
     float    total_runtime_hours;
-    uint8_t  device_address;
-    uint16_t sleep_wait_time;                /* s (smart sleep setting) */
-    uint32_t feature_flags;                  /* raw register 0x1114
-                                                (BIT3: multiplex port 1=RS485/0=CAN) */
     uint8_t  low_soc_alarm;                  /* % (not in PB map, always 0) */
     uint8_t  protocol_version;               /* UART1 protocol number */
     char     battery_type[24];
@@ -170,7 +164,6 @@ bool jkbms_parse_response(const uint8_t *raw, uint16_t len, uint8_t addr, uint16
 bool jkbms_decode_cell_block(const uint8_t *data, uint16_t byte_count, jkbms_data_t *out);
 bool jkbms_decode_status_chunk(uint16_t base, const uint8_t *data, uint16_t len, jkbms_data_t *out);
 bool jkbms_decode_config_chunk(uint16_t base, const uint8_t *data, uint16_t len, jkbms_data_t *out);
-bool jkbms_decode_dev_chunk(uint16_t base, const uint8_t *data, uint16_t len, jkbms_data_t *out);
 bool jkbms_decode_identity_chunk(uint16_t base, const uint8_t *data, uint16_t len, jkbms_data_t *out);
 
 /**

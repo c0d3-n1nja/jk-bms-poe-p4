@@ -27,15 +27,20 @@ static const char *TAG = "jkbms";
 #define RS485_TX_BUF     256
 #define RS485_RESP_TIMEOUT_MS 150   /* per request; the BMS answers within ~15 ms */
 #define RS485_TX_SETTLE_US    2000  /* transceiver turnaround, busy-waited
-                                         (vTaskDelay granularity is 10 ms at
-                                         CONFIG_FREERTOS_HZ=100 - too coarse
-                                         for the RS485 turnaround!) */
-#define RS485_INTERFRAME_MS   75    /* bus quiet time before the next request;
-                                         the BMS needs a longer pause after its
-                                         own response than 5 ms - 75 ms is the
-                                         value proven by the ESPHome reference
-                                         (modbus command_throttle: 75ms) */
-#define JKBM_MAX_CHUNK_WORDS  37u   /* largest proven read length (cell block) */
+                                         for precise timing */
+#define RS485_INTERFRAME_MS   75    /* bus quiet time enforced after EVERY
+                                         transaction: the BMS silently drops
+                                         requests that arrive too soon after
+                                         its own response (75 ms is the value
+                                         proven by the ESPHome reference,
+                                         modbus command_throttle: 75ms) */
+#define JKBM_MAX_CHUNK_WORDS  37u   /* fixed read length (cell block size);
+                                         larger reads are possible, but the
+                                         response would exceed the BMS'
+                                         comfortable chunking */
+#define SILENT_WARN_POLLS     60u   /* consecutive polls with unanswered chunks
+                                         before logging a single warning
+                                         (~5 min at the default interval) */
 #define RS485_RX_CAP     512         /* response buffer (max response = 237 bytes) */
 
 #define MODBUS_ADDR      ((uint8_t)CONFIG_JKBMS_MODBUS_SLAVE_ADDR)
@@ -43,32 +48,32 @@ static const char *TAG = "jkbms";
 static uint8_t s_rx[RS485_RX_CAP];
 static bool s_bms_link_up = false;
 static int64_t s_last_frame_us = 0;
+static bool s_identity_read = false;    /* 0x1400/0x14B2 are constant: read once */
+static bool s_config_read_done = false; /* 0x1000 block: re-read at a lower rate */
+static int64_t s_last_config_read_us = 0;
 static jkbms_data_t s_data;
 static int s_crc_errors = 0;
 
 /* ------------------------------------------------------------------ */
-/* Region table: read in chunks, bisect the chunk size on silence       */
+/* Region table: fixed-size chunks, fully re-read every poll cycle       */
 /* ------------------------------------------------------------------ */
 
 typedef struct {
     uint16_t start;
     uint16_t bytes;
-    uint16_t chunk_words;   /* cached; smallest used read length */
-    uint16_t limit_off;     /* 0 = none; first offset that stayed silent */
+    uint16_t silent_polls;  /* consecutive polls with an unanswered chunk */
     bool (*decode)(uint16_t base, const uint8_t *data, uint16_t len, jkbms_data_t *o);
 } region_t;
 
 static region_t s_regions[] = {
-    { JKBM_REGION_STATUS_START, JKBM_REGION_STATUS_BYTES, JKBM_MAX_CHUNK_WORDS, 0, jkbms_decode_status_chunk },
-    { JKBM_REGION_CONFIG_START, JKBM_REGION_CONFIG_BYTES, JKBM_MAX_CHUNK_WORDS, 0, jkbms_decode_config_chunk },
-    { JKBM_REGION_DEV_START,    JKBM_REGION_DEV_BYTES,    JKBM_MAX_CHUNK_WORDS, 0, jkbms_decode_dev_chunk },
-    { JKBM_REGION_IDENT_START,  JKBM_REGION_IDENT_BYTES,  JKBM_MAX_CHUNK_WORDS, 0, jkbms_decode_identity_chunk },
+    { JKBM_REGION_STATUS_START, JKBM_REGION_STATUS_BYTES, 0, jkbms_decode_status_chunk },
+    { JKBM_REGION_CONFIG_START, JKBM_REGION_CONFIG_BYTES, 0, jkbms_decode_config_chunk },
+    { JKBM_REGION_IDENT_START,  JKBM_REGION_IDENT_BYTES,  0, jkbms_decode_identity_chunk },
 };
 
 #define REGION_STATUS 0
 #define REGION_CONFIG 1
-#define REGION_DEV    2
-#define REGION_IDENT  3
+#define REGION_IDENT  2
 
 /* ------------------------------------------------------------------ */
 /* RS485 (UART, half duplex, RE/DE actively controlled via GPIO)         */
@@ -199,81 +204,94 @@ static void publish_current_state(void)
 }
 
 /**
- * Reads one region in chunks. On silence the chunk size is halved and the
- * same offset retried: the BMS answers some (address, size) combinations
- * with silence instead of a Modbus exception. A silent 1-word read marks the
- * offset as region limit (cached) - the rest of the region is skipped in
- * this and the following cycles, but earlier data still flows.
+ * Reads one region in fixed-size chunks (JKBM_MAX_CHUNK_WORDS, last chunk
+ * truncated to the remainder). A chunk that gets no answer is accepted
+ * silently: its registers keep their previous values and are simply read
+ * again on the next poll - there is no retry within the same cycle and the
+ * chunk size never changes. If a region stays partially silent for
+ * SILENT_WARN_POLLS consecutive polls, one warning is logged (covers a
+ * permanent failure; sporadic errors stay completely silent).
+ * Returns true if at least one chunk was read.
  */
 static bool region_read(region_t *r, jkbms_data_t *o)
 {
     const uint8_t *d;
     uint16_t off = 0;
-    bool any = false;
+    bool any = false, all_ok = true;
 
     while (off < r->bytes) {
         uint16_t remaining = (uint16_t)(r->bytes - off);
-        uint16_t words = r->chunk_words;
+        uint16_t words = JKBM_MAX_CHUNK_WORDS;
 
-        if (r->limit_off != 0u && off >= r->limit_off) {
-            break;                                   /* known-silent offset reached */
-        }
         if ((uint32_t)words * 2u > (uint32_t)remaining) {
             words = (uint16_t)((remaining + 1u) / 2u);
         }
         if (rs485_transaction((uint16_t)(r->start + off), words, s_rx, sizeof(s_rx), &d)) {
             (void)r->decode((uint16_t)(r->start + off), d, (uint16_t)(words * 2u), o);
-            off = (uint16_t)(off + words * 2u);
             any = true;
-        } else if (words > 1u) {
-            r->chunk_words = (uint16_t)(words / 2u);
-            ESP_LOGW(TAG, "Region 0x%04x: no answer, chunk reduced to %u words",
-                     r->start, r->chunk_words);
         } else {
-            if (r->limit_off == 0u) {
-                r->limit_off = off;
-                ESP_LOGW(TAG, "Region 0x%04x: silent from offset %u - skipping rest",
-                         r->start, off);
-            }
-            break;                                   /* retry after the next poll interval */
+            all_ok = false;                          /* silently skipped */
         }
+        off = (uint16_t)(off + words * 2u);
+    }
+
+    if (all_ok) {
+        r->silent_polls = 0;
+    } else if (++r->silent_polls == SILENT_WARN_POLLS) {
+        ESP_LOGW(TAG, "Region 0x%04x: chunks unanswered for %u polls in a row",
+                 r->start, (unsigned)r->silent_polls);
     }
     return any;
 }
 
 static void poll_once(void)
 {
-    jkbms_data_t fresh;
     const uint8_t *d;
-    bool have_cells = false, have_status = false;
+    int64_t now_us;
+    bool have_cells, have_status;
 
-    memset(&fresh, 0, sizeof(fresh));
+    /* The decoders write directly into s_data: fields covered by a chunk
+     * that got no answer keep their previous value until the next poll. */
+    have_cells = rs485_transaction(JKBM_REG_CELL_START, JKBM_REG_CELL_WORDS,
+                                   s_rx, sizeof(s_rx), &d) &&
+                 jkbms_decode_cell_block(d, JKBM_REG_CELL_BYTES, &s_data);
 
-    if (rs485_transaction(JKBM_REG_CELL_START, JKBM_REG_CELL_WORDS, s_rx, sizeof(s_rx), &d) &&
-        jkbms_decode_cell_block(d, JKBM_REG_CELL_BYTES, &fresh)) {
-        have_cells = true;
+    if (!have_cells) {
+        return;                                      /* keep last published state */
     }
 
-    if (have_cells && region_read(&s_regions[REGION_STATUS], &fresh) &&
-        fresh.total_voltage > 1.0f) {
-        have_status = true;
+    /* Mode bits are OR-ed in by the status decoder - start fresh per cycle */
+    s_data.operation_mode_bitmask = 0;
+
+    have_status = region_read(&s_regions[REGION_STATUS], &s_data) &&
+                  s_data.total_voltage > 1.0f;
+
+    if (!have_status) {
+        return;                                      /* keep last published state */
     }
 
-    if (!(have_cells && have_status)) {
-        return;                                      /* nothing usable this cycle */
-    }
-
-    /* Live data complete - publish-worthy; the remaining regions only add
-     * extra fields and never invalidate the data above. */
-    s_data = fresh;
     s_last_frame_us = esp_timer_get_time();
 
-    (void)region_read(&s_regions[REGION_CONFIG], &s_data);
-    (void)region_read(&s_regions[REGION_DEV], &s_data);
-    (void)region_read(&s_regions[REGION_IDENT], &s_data);
+    /* Protection parameters/switches change rarely: re-read them at most
+     * once per JKBMS_CONFIG_READ_INTERVAL_MS (the first cycle always reads
+     * them). In between, the last known values remain in s_data. */
+    now_us = esp_timer_get_time();
+    if (!s_config_read_done ||
+        now_us - s_last_config_read_us >=
+            (int64_t)CONFIG_JKBMS_CONFIG_READ_INTERVAL_MS * 1000) {
+        (void)region_read(&s_regions[REGION_CONFIG], &s_data);
+        s_last_config_read_us = now_us;
+        s_config_read_done = true;
+    }
 
-    if (rs485_transaction(JKBM_REG_PROTO_START, 1, s_rx, sizeof(s_rx), &d)) {
-        s_data.protocol_version = d[0];              /* UART1 protocol number (1 = Modbus) */
+    if (!s_identity_read) {
+        /* Identity strings and the protocol number are constant - read them
+         * once; until both answer, the attempt repeats on every cycle. */
+        if (region_read(&s_regions[REGION_IDENT], &s_data) &&
+            rs485_transaction(JKBM_REG_PROTO_START, 1, s_rx, sizeof(s_rx), &d)) {
+            s_data.protocol_version = d[0];          /* UART1 protocol number (1 = Modbus) */
+            s_identity_read = true;
+        }
     }
 
     if (!s_bms_link_up) {

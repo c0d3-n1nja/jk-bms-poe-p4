@@ -191,13 +191,13 @@ bool jkbms_decode_status_chunk(uint16_t base, const uint8_t *data, uint16_t len,
     if (ST_WIN(0x1290, 4)) {
         o->total_voltage = (float)rd32(ST_PTR(0x1290)) * 0.001f;       /* BatVol, mV */
     }
-    if (ST_WIN(0x1294, 4)) {
-        o->total_power = (float)rd32(ST_PTR(0x1294)) * 0.001f;         /* BatWatt, mW */
-        o->charge_power    = o->total_power > 0.0f ? o->total_power : 0.0f;
-        o->discharge_power = o->total_power < 0.0f ? -o->total_power : 0.0f;
-    }
     if (ST_WIN(0x1298, 4)) {
         o->current = (float)rds32(ST_PTR(0x1298)) * 0.001f;            /* BatCurrent, mA */
+    }
+    if (ST_WIN(0x1294, 4)) {
+        o->total_power = (float)rd32(ST_PTR(0x1294)) * 0.001f;         /* BatWatt, mW */
+        o->charge_power    = o->current > 0.0f ? o->total_power : 0.0f;
+        o->discharge_power = o->current < 0.0f ? -o->total_power : 0.0f;
     }
     if (ST_WIN(0x129C, 2)) {
         o->temperature_1 = (float)rds16(ST_PTR(0x129C)) * 0.1f;        /* TempBat1 */
@@ -311,30 +311,6 @@ bool jkbms_decode_config_chunk(uint16_t base, const uint8_t *data, uint16_t len,
 
 #undef CFG_WIN
 #undef CFG_PTR
-    return true;
-}
-
-/* ------------------------------------------------------------------ */
-/* Device region @0x1108..0x1119 - chunk decoder (arbitrary window)     */
-/* ------------------------------------------------------------------ */
-
-bool jkbms_decode_dev_chunk(uint16_t base, const uint8_t *data, uint16_t len, jkbms_data_t *o)
-{
-    uint32_t end = (uint32_t)base + len;
-
-    if (data == NULL || o == NULL || len == 0u) {
-        return false;
-    }
-
-    if (base <= 0x1108u && 0x1108u + 4u <= end) {
-        o->device_address = (uint8_t)rd32(data + (0x1108u - base));   /* DevAddr */
-    }
-    if (base <= 0x1114u && 0x1114u + 4u <= end) {
-        o->feature_flags = rd32(data + (0x1114u - base));   /* BIT3: mux port 1=RS485/0=CAN */
-    }
-    if (base <= 0x1118u && 0x1118u + 1u <= end) {
-        o->sleep_wait_time = data[0x1118u - base];          /* TIMSmartSleep, hours */
-    }
     return true;
 }
 

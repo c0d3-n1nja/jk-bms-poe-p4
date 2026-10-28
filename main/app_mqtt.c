@@ -28,18 +28,22 @@ static char s_client_id[48];
 static char s_state_topic[96];
 static char s_available_topic[96];
 static char s_json[STATE_JSON_BUF];
+static char s_last_json[STATE_JSON_BUF];  /* last successfully published state */
+static int64_t s_last_publish_us = 0;
 
 /* ------------------------------------------------------------------ */
 
-static void publish(const char *topic, const char *data, int qos, bool retain)
+static bool publish(const char *topic, const char *data, int qos, bool retain)
 {
     if (s_client == NULL || !s_connected) {
-        return;
+        return false;
     }
     int msg_id = esp_mqtt_client_publish(s_client, topic, data, 0, qos, retain);
     if (msg_id < 0) {
         ESP_LOGW(TAG, "Publish to '%s' failed (client busy/offline)", topic);
+        return false;
     }
+    return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -61,7 +65,6 @@ static void build_json(const jkbms_data_t *o, bool link_up, char *dst, size_t ca
 
     APPEND("{");
     APPEND("\"link_up\":%s,", link_up ? "true" : "false");
-    APPEND("\"uptime_s\":%lld,", (long long)(esp_timer_get_time() / 1000000)); 
     if (!link_up) {
         APPEND("}");
         return;
@@ -150,8 +153,6 @@ static void build_json(const jkbms_data_t *o, bool link_up, char *dst, size_t ca
     APPEND("\"discharge_ut_recover\":%.0f,", o->discharge_ut_recover);
 
     APPEND("\"current_calibration\":%.3f,", o->current_calibration);
-    APPEND("\"device_address\":%d,", o->device_address);
-    APPEND("\"sleep_wait_time\":%d,", o->sleep_wait_time);
     APPEND("\"low_soc_alarm\":%d,", o->low_soc_alarm);
     APPEND("\"protocol_version\":%d,", o->protocol_version);
     APPEND("\"total_runtime_h\":%.1f,", o->total_runtime_hours);
@@ -159,20 +160,44 @@ static void build_json(const jkbms_data_t *o, bool link_up, char *dst, size_t ca
     APPEND("\"device_type\":\"%s\",", o->device_type);
     APPEND("\"software_version\":\"%s\",", o->software_version);
     APPEND("\"hardware_version\":\"%s\",", o->hardware_version);
-    APPEND("\"feature_flags\":%" PRIu32 ",", o->feature_flags);
     APPEND("\"manufacturer\":\"%s\"", o->manufacturer);
     APPEND("}");
 #undef APPEND
 }
 
+/**
+ * Publishes the state topic on change: a message is only sent when the JSON
+ * differs from the last successfully published one, or when a heartbeat
+ * interval has passed (so consumers see an active feed and the retained
+ * message stays recent - it is always a complete snapshot). If the publish
+ * itself fails, the change-detection buffer is not updated and the next
+ * cycle retries.
+ */
 void app_mqtt_publish_state(const jkbms_data_t *data, bool link_up)
 {
-    /* smaller reuse while the MQTT task is not connected: */
+    int64_t now;
+    size_t len;
+    bool unchanged, heartbeat_due;
+
     if (!s_connected) {
         return;
     }
     build_json(data, link_up, s_json, sizeof(s_json));
-    publish(s_state_topic, s_json, 1, true);
+
+    now = esp_timer_get_time();
+    unchanged = s_last_json[0] != '\0' && strcmp(s_last_json, s_json) == 0;
+    heartbeat_due = now - s_last_publish_us >=
+                    (int64_t)CONFIG_JKBMS_STATE_HEARTBEAT_MS * 1000;
+    if (unchanged && !heartbeat_due) {
+        return;                                      /* nothing new this cycle */
+    }
+
+    if (!publish(s_state_topic, s_json, 1, true)) {
+        return;                                      /* not sent: retry next cycle */
+    }
+    len = strlen(s_json) + 1;                        /* store for change detection */
+    memcpy(s_last_json, s_json, len);
+    s_last_publish_us = now;
 }
 
 /* ------------------------------------------------------------------ */
@@ -239,8 +264,6 @@ static const mqtt_sensor_entry_t k_sensors[] = {
     { "discharge_ut_protect",          "JK-BMS Discharge UT Protection", "°C", "temperature" },
     { "discharge_ut_recover",          "JK-BMS Discharge UT Recovery",   "°C", "temperature" },
     { "current_calibration",           "JK-BMS Current Calibration",     "A",  "current" },
-    { "device_address",                "JK-BMS Device Address",          "",   NULL },
-    { "sleep_wait_time",               "JK-BMS Sleep Wait Time",         "s",  NULL },
     { "low_soc_alarm",                 "JK-BMS Low SOC Alarm",           "%",  NULL },
     { "protocol_version",              "JK-BMS Protocol Version",        "",   NULL },
     { "total_runtime_h",               "JK-BMS Total Runtime",           "h",  NULL },
@@ -351,6 +374,11 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_
 #if CONFIG_JKBMS_HA_DISCOVERY
             publish_discovery();
 #endif
+            /* Force a fresh full state publish after (re)connect: this also
+             * covers a broker restart without message persistence, where
+             * retained messages are gone. */
+            s_last_json[0] = '\0';
+            s_last_publish_us = 0;
             break;
         case MQTT_EVENT_DISCONNECTED:
             s_connected = false;

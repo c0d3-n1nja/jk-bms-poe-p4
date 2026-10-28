@@ -54,8 +54,27 @@ menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
         range 1000 60000
         default 5000
         help
-            The Modbus read requests (6 register blocks) are sent to the BMS
-            at this interval.
+            The Modbus read requests are sent to the BMS at this interval.
+
+    config JKBMS_CONFIG_READ_INTERVAL_MS
+        int "Interval for re-reading the config/switch block (ms)"
+        range 5000 3600000
+        default 60000
+        help
+            Protection parameters and switch states (register block 0x1000)
+            change rarely: they are re-read from the bus at most once per
+            this interval (the first successful cycle always reads them).
+            In between, the last known values remain part of the state topic.
+
+    config JKBMS_STATE_HEARTBEAT_MS
+        int "State topic heartbeat if nothing changes (ms)"
+        range 5000 3600000
+        default 60000
+        help
+            The state topic is published when values change. If nothing
+            changes, it is re-published as a heartbeat at least once per
+            this interval, so consumers can recognize an active feed and
+            the retained message stays recent.
 
     config JKBMS_NO_RESPONSE_TIMEOUT_MS
         int "Timeout until 'BMS offline' if there is no response (ms)"
