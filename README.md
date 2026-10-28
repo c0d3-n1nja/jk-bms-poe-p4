@@ -13,7 +13,7 @@ Umsetzung des Protokolls von [phinix-org/Multiple-JK-BMS-by-Modbus-RS485](https:
 Gerät: M5Stack **Unit PoE-P4** (SKU U213, legacy/alte Revision – ESP32-P4 Rev < 3.0,
 16 MB Flash, IP101GRI-PHY am internen RMII-Ethernet-MAC).
 
-### Verdrahtung SP3485 ↔ Unit PoE-P4 (Hat2-Bus / Verdrahtung wie von dir beschrieben)
+### Verdrahtung SP3485 ↔ Unit PoE-P4
 
 | SP3485-Board | Unit PoE-P4 |
 |---|---|
