@@ -1,0 +1,126 @@
+# JK-BMS -> MQTT Bridge for M5Stack Unit PoE-P4 (U213, legacy revision)
+
+menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
+
+    config JKBMS_MQTT_URI
+        string "MQTT broker URI"
+        default "mqtt://homeassistant.local:1883"
+        help
+            Scheme + hostname + port of the MQTT broker, e.g.
+            "mqtt://broker.example.com:1883" or "mqtt://192.168.1.10:1883".
+            The hostname is resolved at runtime (DNS), so you can use a dynamic
+            DNS or local name. With "mqtts://..." the embedded CA certificate
+            (see main/ca_cert.pem) is validated.
+
+    config JKBMS_MQTT_USERNAME
+        string "MQTT username (empty = anonymous)"
+        default ""
+
+    config JKBMS_MQTT_PASSWORD
+        string "MQTT password"
+        default ""
+
+    config JKBMS_TOPIC_PREFIX
+        string "MQTT topic prefix"
+        default "jkbms"
+        help
+            Data is published to "<prefix>/state" (JSON), availability on
+            "<prefix>/available". Home Assistant discovery uses
+            "homeassistant/sensor/<prefix>-<device-id>/...".
+
+    config JKBMS_HA_DISCOVERY
+        bool "Home Assistant auto-discovery"
+        default y
+        help
+            Disabled? Then only "<prefix>/state" is published.
+
+    config JKBMS_MQTT_TLS
+        bool "Use TLS if the broker URI uses the mqtts:// scheme"
+        default n
+        help
+            With true, the CA certificate from main/ca_cert.pem becomes
+            mandatory (embedded in the firmware at build time) and is used
+            as the server certificate for MQTTs connections.
+
+    config JKBMS_FALLBACK_DNS
+        string "Fallback DNS server (optional, e.g. 192.168.1.1)"
+        default ""
+        help
+            If DHCP does not provide a (usable) DNS server, you can define one
+            statically here (used for resolving the broker name). Empty = off.
+
+    config JKBMS_POLL_INTERVAL_MS
+        int "JK-BMS polling interval (ms)"
+        range 1000 60000
+        default 5000
+        help
+            The Modbus read requests (6 register blocks) are sent to the BMS
+            at this interval.
+
+    config JKBMS_NO_RESPONSE_TIMEOUT_MS
+        int "Timeout until 'BMS offline' if there is no response (ms)"
+        range 5000 300000
+        default 30000
+
+    config JKBMS_MODBUS_SLAVE_ADDR
+        int "Modbus RTU slave address of the BMS"
+        range 0 15
+        default 1
+        help
+            The BMS answers to this Modbus RTU address. On the RS485-1 (UART1)
+            port the BMS is always a Modbus slave; the DIP switch on the
+            control board (1-2-4-8 weights, ON = 1) selects the address
+            0x00..0x0F. Set the switches to match this value (single pack:
+            address 1 = switch 1 ON, rest OFF).
+
+    menu "RS485 / UART"
+        config JKBMS_RS485_UART_NUM
+            int "UART number (UART0 is not usable: console)"
+            range 1 3
+            default 1
+
+        config JKBMS_RS485_RX_GPIO
+            int "RX GPIO (RO of the SP3485)"
+            default 20
+
+        config JKBMS_RS485_TX_GPIO
+            int "TX GPIO (DI of the SP3485)"
+            default 19
+
+        config JKBMS_RS485_DE_GPIO
+            int "DE/RE GPIO (both RE# and DE lines of the SP3485)"
+            default 21
+            help
+                Actively controlled at 'high' during the transmission,
+                receiver enabled again at 'low'.
+
+        config JKBMS_RS485_DEBUG
+            bool "Log raw RS485 traffic (hexdump of TX/RX bytes)"
+            default n
+            help
+                Hexdumps the polling request and every received byte block.
+                Useful to diagnose wiring (no bytes) vs. baud/protocol issues
+                (bytes arrive but frames do not validate).
+    endmenu
+
+    menu "Ethernet (internal EMAC + IP101GRI, Unit PoE-P4 U213 pinmap)"
+        config JKBMS_ETH_MDC_GPIO
+            int "SMI MDC GPIO"
+            default 31
+
+        config JKBMS_ETH_MDIO_GPIO
+            int "SMI MDIO GPIO"
+            default 52
+
+        config JKBMS_ETH_PHY_RST_GPIO
+            int "PHY reset GPIO"
+            default 51
+
+        config JKBMS_ETH_PHY_ADDR
+            int "PHY address"
+            range -1 31
+            default 1
+            help
+                -1 = auto-detection. Default of the M5Stack UserDemo: 1.
+    endmenu
+endmenu
