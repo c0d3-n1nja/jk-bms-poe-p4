@@ -6,7 +6,7 @@ Balancer-/Statusdaten per **MQTT** Ã¼ber **Ethernet/PoE** (DHCP). Das ist die 
 Umsetzung des Protokolls von [phinix-org/Multiple-JK-BMS-by-Modbus-RS485](https://github.com/phinix-org/Multiple-JK-BMS-by-Modbus-RS485)
 (ohne ESPHome â€“ die Dateien jkbms.h/jkbms.c implementieren das **JK BMS RS485 Modbus V1.0**
 (Protokoll 001) selbst: Modbus RTU, Funktion 0x03, CRC16-MODBUS, Registerbloecke
-0x1000/0x1108/0x1200/0x128A/0x1400 inkl. aller Detail-Offsets).
+0x1000/0x1200/0x128A/0x1400 inkl. aller Detail-Offsets).
 
 ## Hardware
 
@@ -116,6 +116,8 @@ Alle Optionen unter **"Component config â†’ JK-BMS to MQTT Bridge (M5Stack 
 | `JKBMS_MQTT_TLS` | n | Bei `mqtts://â€¦` das eingebettete `ca_cert.pem` als Broker-CA validieren |
 | `JKBMS_FALLBACK_DNS` | leer | Fallback-DNS, z. B. `192.168.1.1` (wenn DHCP keinen (brauchbaren) DNS liefert, fÃ¼r Broker-Namen) |
 | `JKBMS_POLL_INTERVAL_MS` | 5000 | Lesezyklus "Read all registers" |
+| `JKBMS_CONFIG_READ_INTERVAL_MS` | 60000 | Reread-Intervall des Config-Blocks (Schutzparameter/Switches) in ms; dazwischen bleiben die letzten Werte stehen |
+| `JKBMS_STATE_HEARTBEAT_MS` | 60000 | State-Topic wird nur bei Aenderung gesendet; nach dieser Zeit folgt hoechstens ein Heartbeat-Publish |
 | `JKBMS_NO_RESPONSE_TIMEOUT_MS` | 30000 | Timeout bis "BMS offline" meldet |
 | RS485: `JKBMS_RS485_UART_NUM` / `RX` / `TX` / `DE` | 1 / 19 / 20 / 21 | UART + Pins (Pinmap wie oben) |
 | Ethernet: `JKBMS_ETH_MDC/MDIO/PHY_RST/PHY_ADDR` | 31 / 52 / 51 / 1 | Pinmap des U213-Boards |
@@ -129,7 +131,7 @@ Am schnellsten: Werte direkt in **`sdkconfig.defaults`** editieren und danach
 `<prefix>/state` â€” JSON mit (u. a.):
 
 ```
-{"link_up":true,"uptime_s":42,"cell_count":16,
+{"link_up":true,"cell_count":16,
  "cell_voltage_1":3.412, â€¦ "cell_voltage_16":3.405,
  "min_cell_voltage":3.405,"min_cell_voltage_cell":14,
  "max_cell_voltage":3.421,"max_cell_voltage_cell":2,
@@ -150,6 +152,10 @@ Am schnellsten: Werte direkt in **`sdkconfig.defaults`** editieren und danach
   wenn das GerÃ¤t die Verbindung verliert.
 - `link_up:false` wird gesetzt, wenn wiederholt keine gÃ¼ltigen Frames ankommen
   (Timeout: `JKBMS_NO_RESPONSE_TIMEOUT_MS`).
+- Das State-JSON enthaelt kein `uptime_s` mehr: `<prefix>/state` wird nur
+  publiziert, wenn sich Werte geaendert haben; nach hoechstens
+  `JKBMS_STATE_HEARTBEAT_MS` folgt ein Heartbeat-Publish, damit die retained
+  Message aktuell bleibt. Nach jedem MQTT-(Re)Connect wird einmal voll gepublisht.
 
 ### Home Assistant (falls `JKBMS_HA_DISCOVERY=y`)
 
@@ -167,8 +173,7 @@ Registern ist nicht implementiert).
   im MenÃ¼ *Component config â†’ Hardware Settings â†’ Chip revision* auf 1.0/2.0 zurÃ¼ck oder
   bleibe bei ESP-IDF 5.4.2.
 - Der RS485-Port hÃ¤lt den BMS wach; ein Sleep-Modus (Deep Sleep) des BMS blockiert die
-  Kommunikation â€“ im BMS ggf. die Sleep-Wartezeit entsprechend konfigurieren
-  (Feld `sleep_wait_time` in der MQTT-Ausgabe).
+  Kommunikation â€“ im BMS ggf. die Sleep-Wartezeit entsprechend konfigurieren.
 - Die 4 Temperatursensoren: Der Frame dieses Protokolls Ã¼bertrÃ¤gt MOS-Temperatur + 2
   Batterie-Temperatursensoren (T1/T2) â€” genau wie syssi/esphome-jk-bms es dekodiert. Das Feld
   `temperature_sensor_count` zeigt, wie viele Sensoren der BMS meldet (z. B. 4). Falls deine
