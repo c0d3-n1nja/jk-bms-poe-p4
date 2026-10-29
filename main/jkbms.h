@@ -64,6 +64,7 @@ typedef struct {
     float    temperature_2;                  /* deg C (TempBat2) */
     float    temperature_3;                  /* deg C (TempBat3) */
     float    temperature_4;                  /* deg C (TempBat4) */
+    float    temperature_5;                  /* deg C (TempBat5) */
     uint8_t  temperature_sensor_count;
 
     /* Electrical */

@@ -197,7 +197,7 @@ bool jkbms_decode_status_chunk(uint16_t base, const uint8_t *data, uint16_t len,
     if (ST_WIN(0x1294, 4)) {
         o->total_power = (float)rd32(ST_PTR(0x1294)) * 0.001f;         /* BatWatt, mW */
         o->charge_power    = o->current > 0.0f ? o->total_power : 0.0f;
-        o->discharge_power = o->current < 0.0f ? -o->total_power : 0.0f;
+        o->discharge_power = o->current < 0.0f ? o->total_power : 0.0f;
     }
     if (ST_WIN(0x129C, 2)) {
         o->temperature_1 = (float)rds16(ST_PTR(0x129C)) * 0.1f;        /* TempBat1 */
@@ -262,6 +262,9 @@ bool jkbms_decode_status_chunk(uint16_t base, const uint8_t *data, uint16_t len,
     }
     if (ST_WIN(0x12FA, 2)) {
         o->temperature_4 = (float)rds16(ST_PTR(0x12FA)) * 0.1f;        /* TempBat4 */
+    }
+    if (ST_WIN(0x12FC, 2)) {
+        o->temperature_5 = (float)rds16(ST_PTR(0x12FC)) * 0.1f;        /* TempBat5 */
     }
 
 #undef ST_WIN
@@ -362,6 +365,7 @@ void jkbms_finalize(jkbms_data_t *o)
         if (o->temperature_2 != 0.0f) o->temperature_sensor_count++;
         if (o->temperature_3 != 0.0f) o->temperature_sensor_count++;
         if (o->temperature_4 != 0.0f) o->temperature_sensor_count++;
+        if (o->temperature_5 != 0.0f) o->temperature_sensor_count++;
     }
 }
 

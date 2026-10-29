@@ -20,3 +20,9 @@ void app_mqtt_stop(void);
  * data may be NULL to publish an "unavailable" state {link_up:false}.
  */
 void app_mqtt_publish_state(const jkbms_data_t *data, bool link_up);
+
+/**
+ * Publishes the current JK-BMS RS485 availability.
+ * The last known state is republished after MQTT reconnects.
+ */
+void app_mqtt_publish_bms_available(bool available);

@@ -26,7 +26,11 @@ static bool s_started = false;
 static char s_dev_id[16];               /* e.g. "ABCDEF123456" */
 static char s_client_id[48];
 static char s_state_topic[96];
-static char s_available_topic[96];
+static char s_mqtt_available_topic[96];
+static char s_bms_available_topic[96];
+
+/* Last known BMS state; initially offline until a valid poll succeeds. */
+static volatile bool s_bms_available = false;
 static char s_json[STATE_JSON_BUF];
 static char s_last_json[STATE_JSON_BUF];  /* last successfully published state */
 static int64_t s_last_publish_us = 0;
@@ -46,6 +50,14 @@ static bool publish(const char *topic, const char *data, int qos, bool retain)
     return true;
 }
 
+void app_mqtt_publish_bms_available(bool available)
+{
+    s_bms_available = available;
+
+    publish(s_bms_available_topic,
+            available ? "online" : "offline",
+            1, true);
+}
 /* ------------------------------------------------------------------ */
 /* JSON state message                                                   */
 /* ------------------------------------------------------------------ */
@@ -95,6 +107,9 @@ static void build_json(const jkbms_data_t *o, bool link_up, char *dst, size_t ca
     }
     if (o->temperature_sensor_count >= 4) {
         APPEND("\"temperature_4\":%.1f,", o->temperature_4);
+    }
+    if (o->temperature_sensor_count >= 5) {
+        APPEND("\"temperature_5\":%.1f,", o->temperature_5);
     }
     APPEND("\"temperature_sensor_count\":%d,", o->temperature_sensor_count);
 
@@ -282,7 +297,7 @@ static void publish_discovery_sensor(const char *key, const char *name,
              "{\"name\":\"%s\",\"state_topic\":\"%s\","
              "\"value_template\":\"{{ value_json.%s }}\","
              "\"unique_id\":\"%s\",\"availability_topic\":\"%s\"",
-             name, s_state_topic, key, uniq, s_available_topic);
+             name, s_state_topic, key, uniq, s_mqtt_available_topic);
     if (unit[0] != '\0') {
         snprintf(payload + strlen(payload), sizeof(payload) - strlen(payload), ",\"unit_of_measurement\":\"%s\"", unit);
     }
@@ -331,7 +346,7 @@ static void publish_discovery(void)
                  "\"value_template\":\"{{ 'ON' if (value_json.%s is defined and value_json.%s) else 'OFF' }}\","
                  "\"unique_id\":\"%s\",\"device\":{\"identifiers\":[\"jkbms-%s\"],"
                  "\"name\":\"JK-BMS (%s)\",\"manufacturer\":\"Jikong\",\"model\":\"\"}}",
-                 binary_names[i], s_state_topic, s_available_topic,
+                 binary_names[i], s_state_topic, s_mqtt_available_topic,
                  binary_tpls[i], binary_tpls[i], uniq, s_dev_id, s_dev_id);
         publish(topic, payload, 1, true);
     }
@@ -349,7 +364,7 @@ static void publish_discovery(void)
                  "\"value_template\":\"{{ value_json.%s }}\",\"unique_id\":\"%s\","
                  "\"device\":{\"identifiers\":[\"jkbms-%s\"],\"name\":\"JK-BMS (%s)\","
                  "\"manufacturer\":\"Jikong\",\"model\":\"\"}}",
-                 text_names[i], s_state_topic, s_available_topic, texts[i], uniq,
+                 text_names[i], s_state_topic, s_mqtt_available_topic, texts[i], uniq,
                  s_dev_id, s_dev_id);
         publish(topic, payload, 1, true);
     }
@@ -370,13 +385,20 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_
         case MQTT_EVENT_CONNECTED:
             s_connected = true;
             ESP_LOGI(TAG, "MQTT connected to %s", CONFIG_JKBMS_MQTT_URI);
-            publish(s_available_topic, "online", 1, true);
-#if CONFIG_JKBMS_HA_DISCOVERY
+
+            /* Availability of the PoE-P4 -> MQTT connection */
+            publish(s_mqtt_available_topic, "online", 1, true);
+
+            /* Restore the independently tracked RS485/BMS status */
+            publish(s_bms_available_topic,
+                    s_bms_available ? "online" : "offline",
+                    1, true);
+
+        #if CONFIG_JKBMS_HA_DISCOVERY
             publish_discovery();
-#endif
-            /* Force a fresh full state publish after (re)connect: this also
-             * covers a broker restart without message persistence, where
-             * retained messages are gone. */
+        #endif
+
+            /* Force a fresh full state publish after reconnect */
             s_last_json[0] = '\0';
             s_last_publish_us = 0;
             break;
@@ -410,7 +432,10 @@ esp_err_t app_mqtt_init(void)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     snprintf(s_client_id, sizeof(s_client_id), "jkbms-%s", s_dev_id);
     snprintf(s_state_topic, sizeof(s_state_topic), "%s/state", CONFIG_JKBMS_TOPIC_PREFIX);
-    snprintf(s_available_topic, sizeof(s_available_topic), "%s/available", CONFIG_JKBMS_TOPIC_PREFIX);
+    snprintf(s_bms_available_topic, sizeof(s_bms_available_topic),
+             "%s/available", CONFIG_JKBMS_TOPIC_PREFIX);
+    snprintf(s_mqtt_available_topic, sizeof(s_mqtt_available_topic),
+             "%s/mqtt_available", CONFIG_JKBMS_TOPIC_PREFIX);
 
     cfg.broker.address.uri = CONFIG_JKBMS_MQTT_URI;
     cfg.credentials.client_id = s_client_id;
@@ -431,7 +456,7 @@ esp_err_t app_mqtt_init(void)
 #endif
 
     cfg.session.keepalive = 30;
-    cfg.session.last_will.topic = s_available_topic;
+    cfg.session.last_will.topic = s_mqtt_available_topic;
     cfg.session.last_will.msg = "offline";
     cfg.session.last_will.qos = 1;
     cfg.session.last_will.retain = 1;

@@ -296,8 +296,12 @@ static void poll_once(void)
 
     if (!s_bms_link_up) {
         s_bms_link_up = true;
+
         ESP_LOGI(TAG, "JK-BMS online (%d cells, fw %s, model %s)",
-                 s_data.cell_count, s_data.software_version, s_data.device_type);
+                 s_data.cell_count, s_data.software_version,
+                 s_data.device_type);
+
+        app_mqtt_publish_bms_available(true);
     }
 
     jkbms_finalize(&s_data);
@@ -315,6 +319,7 @@ static void poll_task(void *arg)
         if (s_bms_link_up && esp_timer_get_time() - s_last_frame_us > no_resp_us) {
             s_bms_link_up = false;
             ESP_LOGW(TAG, "No response from the BMS - going offline");
+            app_mqtt_publish_bms_available(false);
             publish_current_state();
         }
     }
