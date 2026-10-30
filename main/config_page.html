@@ -5,25 +5,197 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>JK-BMS Bridge – Konfiguration</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 16px auto; max-width: 760px; padding: 0 12px; color: #1c2733; }
-  h1 { font-size: 1.35rem; }
-  fieldset { border: 1px solid #c5ccd4; border-radius: 6px; margin: 14px 0; }
-  legend { font-weight: 600; padding: 0 6px; }
-  label { display: block; margin: 8px 0; }
-  input[type=text], input[type=password] { padding: 6px; width: 300px; max-width: 100%;
-    border: 1px solid #9aa4ad; border-radius: 4px; font-size: 0.95rem; }
-  .hint { color: #5b6670; font-size: 0.85rem; margin: 4px 0; }
-  button { padding: 8px 18px; font-size: 1rem; border-radius: 6px; border: 1px solid #2f6fb0;
-    background: #3b78b8; color: #fff; cursor: pointer; margin-right: 8px; }
-  .off { display: none; }
-  .ok { color: #187a2f; font-weight: 600; }
-  .err { color: #b3261e; font-weight: 600; }
-  code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+  :root {
+    color-scheme: light;
+    --bg: #f3f6fb;
+    --surface: #ffffff;
+    --ink: #172235;
+    --muted: #66758a;
+    --line: #dce4ef;
+    --accent: #2563eb;
+    --accent-dark: #1d4ed8;
+    --accent-soft: #eaf1ff;
+    --good: #15803d;
+    --bad: #b42318;
+    --shadow: 0 10px 28px rgba(26, 45, 78, .07);
+  }
+
+  * { box-sizing: border-box; }
+  html { min-height: 100%; background: var(--bg); }
+  body {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 30px 20px 48px;
+    color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .hero {
+    position: relative;
+    overflow: hidden;
+    padding: 28px 30px;
+    margin-bottom: 22px;
+    border-radius: 20px;
+    color: #fff;
+    background: linear-gradient(125deg, #142d52 0%, #1e4f91 58%, #2877c7 100%);
+    box-shadow: 0 16px 34px rgba(24, 62, 115, .2);
+  }
+  .hero::after {
+    content: "";
+    position: absolute;
+    width: 230px;
+    height: 230px;
+    right: -70px;
+    top: -105px;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: 50%;
+    box-shadow: 0 0 0 24px rgba(255,255,255,.045), 0 0 0 50px rgba(255,255,255,.035);
+    pointer-events: none;
+  }
+  .eyebrow {
+    margin: 0 0 5px;
+    color: #c7ddff;
+    font-size: .75rem;
+    font-weight: 750;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+  }
+  h1 { position: relative; z-index: 1; margin: 0; font-size: clamp(1.55rem, 4vw, 2.05rem); line-height: 1.2; letter-spacing: -.035em; }
+  .hero-copy { position: relative; z-index: 1; max-width: 620px; margin: 10px 0 0; color: #e0ecff; }
+  #meta {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    margin: 17px 0 0;
+    padding: 6px 10px;
+    border: 1px solid rgba(255,255,255,.22);
+    border-radius: 999px;
+    background: rgba(9, 27, 54, .24);
+    color: #f4f8ff;
+    font-size: .82rem;
+    overflow-wrap: anywhere;
+  }
+  form { margin: 0; }
+  fieldset {
+    min-width: 0;
+    margin: 16px 0;
+    padding: 22px 24px 18px;
+    border: 1px solid var(--line);
+    border-radius: 15px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  legend {
+    padding: 0 9px;
+    color: #203858;
+    font-size: 1rem;
+    font-weight: 750;
+    letter-spacing: -.01em;
+  }
+  label { display: block; margin: 13px 0; font-weight: 600; color: #34445b; }
+  input[type="text"], input[type="password"] {
+    display: block;
+    width: min(100%, 470px);
+    min-height: 43px;
+    margin-top: 6px;
+    padding: 10px 12px;
+    border: 1px solid #c8d3e1;
+    border-radius: 9px;
+    outline: none;
+    background: #fbfcff;
+    color: var(--ink);
+    font: inherit;
+    font-weight: 450;
+    transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+  }
+  input[type="text"]:focus, input[type="password"]:focus {
+    border-color: var(--accent);
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .14);
+  }
+  input::placeholder { color: #9aa8ba; }
+  input[type="checkbox"] {
+    width: 17px;
+    height: 17px;
+    margin: 0 8px 0 0;
+    accent-color: var(--accent);
+    vertical-align: -3px;
+    cursor: pointer;
+  }
+  label:has(input[type="checkbox"]) { font-weight: 550; }
+  .hint { margin: 7px 0 4px; color: var(--muted); font-size: .86rem; font-weight: 400; }
+  .off { display: none !important; }
+  button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 42px;
+    padding: 10px 16px;
+    border: 1px solid var(--accent);
+    border-radius: 9px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 3px 8px rgba(37, 99, 235, .15);
+    transition: background .15s ease, transform .15s ease, box-shadow .15s ease;
+  }
+  button:hover { background: var(--accent-dark); box-shadow: 0 5px 12px rgba(37, 99, 235, .2); }
+  button:active { transform: translateY(1px); }
+  button:focus-visible { outline: 3px solid rgba(37, 99, 235, .28); outline-offset: 2px; }
+  button:disabled { opacity: .55; cursor: wait; box-shadow: none; }
+  #ourl_reset {
+    border-color: #cbd5e1;
+    background: #f8fafc;
+    color: #334155;
+    box-shadow: none;
+  }
+  #ourl_reset:hover { background: #eef2f7; }
+  #msg, #omsg, #cmsg { margin-left: 7px; overflow-wrap: anywhere; }
+  .ok { color: var(--good); font-weight: 700; }
+  .err { color: var(--bad); font-weight: 700; }
+  code {
+    display: inline-block;
+    max-width: 100%;
+    padding: 3px 7px;
+    border: 1px solid #e1e8f1;
+    border-radius: 6px;
+    background: #f4f7fb;
+    color: #34445b;
+    font: .88em/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  #updinfo { font-weight: 700; }
+  .save-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 20px 0 26px; }
+  .save-row button { min-height: 48px; padding: 12px 20px; }
+  .section-intro { margin: 0 0 14px; color: var(--muted); font-size: .9rem; }
+  .status-line { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  .status-line code { flex: 0 1 auto; }
+  #ostat { color: #334155; }
+  @media (max-width: 600px) {
+    body { padding: 14px 12px 30px; }
+    .hero { padding: 23px 20px; border-radius: 15px; }
+    fieldset { padding: 18px 16px 14px; border-radius: 12px; }
+    button { width: 100%; margin: 3px 0; }
+    .save-row { align-items: stretch; }
+    #msg, #omsg, #cmsg { display: block; margin: 6px 0 0; }
+    .status-line { align-items: stretch; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+  }
 </style>
 </head>
 <body>
-<h1>JK-BMS Bridge – Konfiguration</h1>
-<p id="meta">lade…</p>
+<header class="hero">
+  <p class="eyebrow">Gerätemanagement · ESP32-P4</p>
+  <h1>JK-BMS Bridge</h1>
+  <p class="hero-copy">Netzwerk, MQTT-Verbindung und Firmware bequem konfigurieren.</p>
+  <p id="meta">Gerätestatus wird geladen …</p>
+</header>
 
 <form id="f">
   <fieldset>
@@ -67,12 +239,16 @@
     <label><input type="checkbox" name="dbg"> RS485-Debug (Hexdump der Rohdaten im Log)</label>
   </fieldset>
 
-  <p><button type="submit">Speichern (Gerät startet danach neu)</button>
-     <span id="msg"></span></p>
+  <div class="save-row">
+    <button type="submit">Konfiguration speichern</button>
+    <span class="hint">Das Gerät startet anschließend neu.</span>
+    <span id="msg" role="status" aria-live="polite"></span>
+  </div>
 </form>
 
 <fieldset>
   <legend>Firmware-Update</legend>
+  <p class="section-intro">Firmware-Version prüfen und Aktualisierungen kontrolliert installieren.</p>
   <p>Installierte Software: <code id="ver">–</code> aus Partition <code id="part">–</code></p>
   <p>Standard-Update-URL (Build-Zeit): <code id="ourl">–</code></p>
   <label>Manuelle Update-URL (leer = Standard-URL verwenden)
@@ -84,15 +260,15 @@
   <p>Update-Check: <code id="updinfo" class="status">noch nicht geprüft</code>
      <button type="button" id="cbtn" style="margin-left:8px">Jetzt prüfen</button></p>
   <p><button type="button" id="obtn">Update von der aktiven URL installieren</button>
-     <span id="omsg"></span></p>
+     <span id="omsg" role="status" aria-live="polite"></span></p>
   <p class="hint">Aktiv ist die manuelle URL, sonst die Standard-URL. Die Prüfung lädt nur eine
      kleine „version“-Textdatei (regelmäßig sowie per „Jetzt prüfen“) und zeigt hier und über
      MQTT (<code>&lt;prefix&gt;/device</code>) an, ob eine neuere Version verfügbar ist. Die neue
      Firmware bootet zunächst „pending verify“ und wird erst nach dem ersten fehlerfreien
      BMS-Poll bestätigt; bootet sie nicht, rollt der Bootloader automatisch zurück.
      MQTT-Trigger (<code>&lt;prefix&gt;/ota</code>) funktionieren unabhängig davon mit beliebigen URLs.</p>
-  <p>Status: <code id="ostat" class="status">idle</code></p>
-  <p id="cmsg"></p>
+  <p class="status-line"><strong>Installationsstatus</strong> <code id="ostat" class="status">idle</code></p>
+  <p id="cmsg" role="status" aria-live="polite"></p>
 </fieldset>
 
 <script>
