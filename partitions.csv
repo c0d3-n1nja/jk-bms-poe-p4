@@ -1,5 +1,13 @@
 # ESP32-P4, 16 MB Flash (Unit PoE-P4 SKU U213)
-# Name,   Type, SubType, Offset,  Size,     Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory,  0x10000, 0x600000,
+# OTA-capable layout: two app slots + otadata (blank otadata boots ota_0;
+# with CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE a failed image rolls back to
+# the other slot). ota_0/ota_1 must stay 64 KB aligned (0x10000).
+# 'cfg' holds the runtime web-UI configuration (NVS) and survives OTA:
+# it sits before the app area and is never touched by updates.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+otadata,  data, ota,     0x10000,  0x2000,
+cfg,      data, nvs,     0x12000,  0x6000,
+ota_0,    app,  ota_0,   0x20000,  0x600000,
+ota_1,    app,  ota_1,   0x620000, 0x600000,
