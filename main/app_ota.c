@@ -1,9 +1,12 @@
 /* OTA firmware update via MQTT-triggered URL download (esp_https_ota).
  * See app_ota.h for the usage contract. */
 #include <string.h>
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_ota_ops.h"
 #include "esp_app_desc.h"
@@ -12,6 +15,7 @@
 
 #include "app_ota.h"
 #include "app_mqtt.h"
+#include "app_config.h"
 
 static const char *TAG = "app_ota";
 
@@ -19,12 +23,31 @@ static const char *TAG = "app_ota";
 #define OTA_TASK_STACK   12288   /* TLS buffer + ota ops need headroom */
 #define OTA_PROGRESS_STEP 10     /* status update every 10 % */
 
+/* --- version check -------------------------------------------------- */
+#define VER_FILE_MAX     OTA_URL_MAX
+#define VER_READ_MAX     48       /* version string cap (few bytes expected) */
+#define VER_TASK_STACK   8192
+#define VER_POLL_MS      1000     /* scheduler tick: reads flags only      */
+#define VER_RETRY_MS     (60 * 1000)          /* retry after a failed check */
+#define VER_FALLBACK_US  ((int64_t)1000 * 1000 * 1000 * 60 * 60 * 24 * 365) /* no auto check */
+
 /* Reuse the CA certificate embedded for MQTTs (server verification). */
 extern const unsigned char server_ca_pem_start[] asm("_binary_ca_cert_pem_start");
 
 static char s_url[OTA_URL_MAX];
 static bool s_busy = false;
 static char s_status[64] = "idle";
+
+/* Version check state (single writer: the "ver_chk" task). */
+static TaskHandle_t s_vchk_task = NULL;
+static portMUX_TYPE s_vchk_mux = portMUX_INITIALIZER_UNLOCKED;   /* protects s_remote + flags */
+static volatile bool s_vchk_requested = false;   /* next loop pass does a fetch */
+static volatile bool s_vchk_busy = false;        /* fetch currently running */
+static volatile bool s_vchk_checked = false;     /* at least one fetch finished */
+static volatile bool s_vchk_available = false;   /* remote > installed         */
+static char s_installed[33] = "";                /* version of the running app */
+static char s_remote[VER_READ_MAX] = "";
+static int64_t s_vchk_next_us = 0;               /* due time of the auto check */
 
 /* Every visible OTA state goes through here: keeps the last status for the
  * web UI (app_ota_last_status) and publishes it to MQTT (retained). */
@@ -192,12 +215,24 @@ void app_ota_confirm_running_image(void)
     done = true;
 }
 
-bool app_ota_start_default(void)
+/* ------------------------------------------------------------------ */
+/* Online update check: plain "version" file, compare, no download      */
+/* ------------------------------------------------------------------ */
+
+const char *app_ota_effective_url(void)
 {
-    const char *url = CONFIG_JKBMS_OTA_DEFAULT_URL;
+    const app_config_t *cfg = app_config_get();
+
+    return cfg->ota_url[0] != '\0' ? cfg->ota_url : CONFIG_JKBMS_OTA_DEFAULT_URL;
+}
+
+bool app_ota_start_configured(void)
+{
+    const char *url = app_ota_effective_url();
 
     if (url[0] == '\0') {
-        ESP_LOGW(TAG, "No default OTA URL configured (CONFIG_JKBMS_OTA_DEFAULT_URL)");
+        ESP_LOGW(TAG, "No update URL configured (web UI + CONFIG_JKBMS_OTA_DEFAULT_URL empty)");
+        set_status("error: no update URL configured");
         return false;
     }
     return app_ota_start_from_url(url);
@@ -206,4 +241,259 @@ bool app_ota_start_default(void)
 const char *app_ota_last_status(void)
 {
     return s_status;
+}
+
+/** Reads the version of the running image (app descriptor is only partially NUL-terminated by the build). */
+static void get_installed_version(char dst[33])
+{
+    const esp_app_desc_t *desc = esp_app_get_description();
+
+    memcpy(dst, desc->version, 32);
+    dst[32] = '\0';
+}
+
+/** Accepts only "v<d.d.d-test-free>" shapes: digits and dots, optional leading 'v'. */
+static bool plausible_version(const char *s)
+{
+    int digits = 0;
+
+    if (s == NULL || *s == '\0') {
+        return false;
+    }
+    if (*s == 'v' || *s == 'V') {
+        s++;
+    }
+    for (; *s != '\0'; s++) {
+        if (*s >= '0' && *s <= '9') {
+            digits++;
+        } else if (*s != '.') {
+            return false;                            /* anything else: untrusted */
+        }
+    }
+    return digits > 0;
+}
+
+/**
+ * Numeric dotted compare ("v0.0.4" vs "v0.0.3"); missing groups and
+ * suffixes like "0.0.4-rc1" behave as 0 for their group and any remaining
+ * digits decide (so "0.0.3" < "0.0.3.1"). Non-layered garbage stays "not
+ * newer" - plausible_version() already filters most of it.
+ */
+static bool version_is_newer(const char *remote, const char *installed)
+{
+    int guard;
+
+    for (guard = 0; guard < 16; guard++) {
+        if (*remote == 'v' || *remote == 'V') remote++;
+        if (*installed == 'v' || *installed == 'V') installed++;
+        long r = strtol(remote, (char **)&remote, 10);
+        long l = strtol(installed, (char **)&installed, 10);
+        if (r != l) {
+            return r > l;
+        }
+        if (*remote == '.') remote++;
+        if (*installed == '.') installed++;
+        if ((*remote == '\0' || *installed == '\0') == false) {
+            continue;
+        }
+        return *remote != '\0';                      /* "1.2.3.4" > "1.2.3", else equal */
+    }
+    return false;                                    /* max 16 groups reached */
+}
+
+/**
+ * Version-file URL: CONFIG_JKBMS_VERSION_URL if set, else the active
+ * update URL (manual, else default) with the last path element replaced
+ * by "version" - e.g. ".../releases/latest/download/jkbms_mqtt_poe_p4.bin"
+ * becomes ".../releases/latest/download/version". False if nothing usable.
+ */
+static bool build_version_url(char *dst, size_t cap)
+{
+    const char *src = app_ota_effective_url();
+    const char *slash;
+
+    if (CONFIG_JKBMS_VERSION_URL[0] != '\0') {
+        snprintf(dst, cap, "%s", CONFIG_JKBMS_VERSION_URL);
+        return true;
+    }
+    if (src[0] == '\0') {
+        return false;
+    }
+    slash = strrchr(src, '/');
+    if (slash == NULL || slash == src ||
+        (slash - 1 >= src && slash[-1] == '/')) {    /* host root "http://host" without path */
+        return false;
+    }
+    snprintf(dst, cap, "%.*sversion", (int)(slash - src), src);
+    return dst[0] != '\0' && strlen(dst) < cap;
+}
+
+/** One synchronous fetch of the version file + compare + state update. */
+static void version_attempt(void)
+{
+    esp_http_client_config_t http = {
+        .timeout_ms = 10000,
+        .buffer_size = 2048,
+        .buffer_size_tx = 1024,
+    };
+    esp_http_client_handle_t client;
+    const char *inst;      /* points into s_installed during the attempt */
+    char buf[VER_READ_MAX] = "";
+    char url[VER_FILE_MAX];
+    int n_read = 0;
+    int status = 0;
+    bool ok = false;
+
+    s_vchk_busy = true;
+    get_installed_version(s_installed);
+    inst = s_installed;
+
+    if (!build_version_url(url, sizeof(url))) {
+        /* Nothing configured/derivable: warn once, then wait for a manual
+         * trigger (web UI or reboot) instead of retrying in a tight loop. */
+        ESP_LOGW(TAG, "Version check skipped: no update URL configured (web UI + CONFIG_JKBMS_OTA_DEFAULT_URL)");
+        s_vchk_next_us = esp_timer_get_time() + VER_FALLBACK_US;
+        s_vchk_busy = false;
+        return;
+    }
+    http.url = url;
+
+#if CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+    /* TEMPORARY insecure mode: TLS still encrypts, but the server is not
+     * validated (ca_cert.pem is still a placeholder). */
+    ESP_LOGW(TAG, "Version check https: TLS server verification DISABLED (temporary)");
+#else
+    if (strncmp(url, "https://", 8) == 0) {
+        http.cert_pem = (const char *)server_ca_pem_start;
+    }
+#endif
+
+    client = esp_http_client_init(&http);
+    if (client == NULL) {
+        /* URL parse/config problem (DNS errors happen later, at open):
+         * not retryable automatically -> manual trigger only. */
+        ESP_LOGE(TAG, "Version check: esp_http_client_init failed for %s", url);
+        s_vchk_next_us = esp_timer_get_time() + VER_FALLBACK_US;
+        s_vchk_busy = false;
+        return;
+    }
+
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        int hdr;
+        if ((hdr = esp_http_client_fetch_headers(client)) >= 0) {
+            status = esp_http_client_get_status_code(client);
+            while (n_read < (int)sizeof(buf) - 1) {
+                int r = esp_http_client_read(client, buf + n_read, 1);
+                if (r <= 0) {
+                    break;
+                }
+                n_read += r;
+            }
+            buf[n_read] = '\0';
+        } else {
+            ESP_LOGE(TAG, "Version check: fetch_headers failed (%s)", esp_err_to_name((esp_err_t)hdr));
+        }
+        esp_http_client_close(client);
+    } else {
+        ESP_LOGE(TAG, "Version check: connection to %s failed", url);
+    }
+    esp_http_client_cleanup(client);
+
+    if (status == 200 && n_read > 0) {
+        /* Trim everything ANSI printable around the actual token down to
+         * a plausible version string; reject anything else untrusted. */
+        char *p = buf, *e = buf + n_read;
+        while (p < e && *p <= ' ') {
+            p++;
+        }
+        while (e > p && e[-1] <= ' ') {
+            e--;
+        }
+        *e = '\0';
+        if (plausible_version(p)) {
+            char candidate[VER_READ_MAX];
+            bool newer;
+
+            snprintf(candidate, sizeof(candidate), "%s", p);
+            newer = version_is_newer(candidate, inst);
+            taskENTER_CRITICAL(&s_vchk_mux);
+            memcpy(s_remote, candidate, sizeof(candidate));
+            s_vchk_available = newer;
+            s_vchk_checked = true;
+            taskEXIT_CRITICAL(&s_vchk_mux);
+            ok = true;
+            if (newer) {
+                ESP_LOGW(TAG, "Update available: remote %s is newer than the running %s", candidate, inst);
+            } else {
+                ESP_LOGI(TAG, "Version check: %s - running %s is up to date", candidate, inst);
+            }
+        } else {
+            ESP_LOGW(TAG, "Version check: '%s' does not look like a version string", buf);
+        }
+    } else if (status != 0) {
+        ESP_LOGW(TAG, "Version check: HTTP %d from %s", status, url);
+    }
+
+    /* Result / failure -> schedule the next automatic attempt. A successful
+     * check is repeated only after the configured interval; failures come
+     * back sooner (retry covers "link needs a moment" at boot). With the
+     * automatic check disabled (interval 0) there is no re-check at all:
+     * manual triggers (web UI / reboot) are the only other source. */
+    s_vchk_next_us = esp_timer_get_time();
+    if (ok && CONFIG_JKBMS_VERSION_CHECK_INTERVAL_S > 0) {
+        s_vchk_next_us += (int64_t)CONFIG_JKBMS_VERSION_CHECK_INTERVAL_S * 1000000;
+    } else if (!ok && CONFIG_JKBMS_VERSION_CHECK_INTERVAL_S > 0) {
+        s_vchk_next_us += VER_RETRY_MS;
+    } else {
+        s_vchk_next_us += VER_FALLBACK_US;           /* manual check only */
+    }
+    s_vchk_busy = false;
+    if (s_vchk_checked) {
+        /* Update the retained device topic with the new update state. */
+        app_mqtt_publish_device_info();
+    }
+}
+
+/** Persistent scheduler: fetches on request flags and keeps the cadence. */
+static void version_check_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        if (s_vchk_requested || esp_timer_get_time() >= s_vchk_next_us) {
+            s_vchk_requested = false;
+            version_attempt();
+        }
+        vTaskDelay(pdMS_TO_TICKS(VER_POLL_MS));
+    }
+}
+
+bool app_ota_trigger_version_check(void)
+{
+    if (s_vchk_task == NULL) {
+        if (xTaskCreate(version_check_task, "ver_chk", VER_TASK_STACK, NULL, 4, &s_vchk_task) != pdPASS) {
+            s_vchk_task = NULL;
+            ESP_LOGE(TAG, "xTaskCreate(ver_chk) failed");
+            return false;
+        }
+        ESP_LOGI(TAG, "Update check started (%d s interval, URL %s)",
+                 CONFIG_JKBMS_VERSION_CHECK_INTERVAL_S,
+                 CONFIG_JKBMS_VERSION_URL[0] != '\0' ? CONFIG_JKBMS_VERSION_URL
+                                                     : "(derived from the update URL)");
+    }
+    s_vchk_requested = true;                         /* immediate attempt */
+    return true;
+}
+
+void app_ota_get_version_info(app_ota_version_info_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    get_installed_version(out->installed);
+    taskENTER_CRITICAL(&s_vchk_mux);
+    memcpy(out->remote, s_remote, sizeof(out->remote));
+    out->checked   = s_vchk_checked;
+    out->available = s_vchk_available;
+    out->checking  = s_vchk_busy;
+    taskEXIT_CRITICAL(&s_vchk_mux);
 }

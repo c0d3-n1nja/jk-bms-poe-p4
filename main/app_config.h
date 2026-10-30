@@ -8,6 +8,7 @@
 #define APP_CONFIG_MQTT_URI_MAX     128
 #define APP_CONFIG_MQTT_USER_MAX    64
 #define APP_CONFIG_MQTT_PASS_MAX    64
+#define APP_CONFIG_OTA_URL_MAX      256  /* manual firmware update URL (app_ota.c uses the same cap) */
 
 /**
  * Runtime device configuration, persisted in the dedicated NVS partition
@@ -32,6 +33,7 @@ typedef struct {
     char   mqtt_pass[APP_CONFIG_MQTT_PASS_MAX];
     bool   mqtt_tls;                                  /* +CA verify, mqtt<->mqtts upswitch */
     bool   rs485_debug;                               /* raw RS485 TX/RX hexdumps */
+    char   ota_url[APP_CONFIG_OTA_URL_MAX];           /* manual update URL; empty = build-time default */
 } app_config_t;
 
 /** Loads the configuration (first boot / after reset: defaults). Call once at boot. */

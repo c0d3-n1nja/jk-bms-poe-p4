@@ -6,5 +6,5 @@ idf_component_register(
     PRIV_REQUIRES
         driver esp_timer esp_netif esp_eth lwip esp_event mqtt
         esp_http_server nvs_flash mbedtls
-        esp_https_ota app_update
+        esp_https_ota esp_http_client app_update
 )

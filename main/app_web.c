@@ -100,6 +100,7 @@ static void json_escape(const char *src, char *dst, size_t cap)
 
 /* Scratch buffers for escaped strings (simple single-client usage). */
 static char e_ip[64], e_mask[64], e_gw[64], e_dns[64], e_uri[300], e_user[160];
+static char e_ourl[300], e_ourl_def[300], e_suv[80];
 
 /* ------------------------------------------------------------------ */
 /* Handlers                                                             */
@@ -120,9 +121,10 @@ static esp_err_t h_config_json(httpd_req_t *req)
 {
     const app_config_t *cfg;
     const esp_app_desc_t *app;
+    app_ota_version_info_t vi;
     char dev[16];
     uint8_t mac[6] = { 0 };
-    char buf[1024];
+    char buf[1280];
     int n;
 
     if (!auth_ok(req)) {
@@ -130,6 +132,7 @@ static esp_err_t h_config_json(httpd_req_t *req)
     }
     cfg = app_config_get();
     app = esp_app_get_description();
+    app_ota_get_version_info(&vi);
 
     json_escape(cfg->static_ip,      e_ip,   sizeof(e_ip));
     json_escape(cfg->static_netmask, e_mask, sizeof(e_mask));
@@ -137,6 +140,9 @@ static esp_err_t h_config_json(httpd_req_t *req)
     json_escape(cfg->static_dns,     e_dns,  sizeof(e_dns));
     json_escape(cfg->mqtt_uri,       e_uri,  sizeof(e_uri));
     json_escape(cfg->mqtt_user,      e_user, sizeof(e_user));
+    json_escape(cfg->ota_url,        e_ourl, sizeof(e_ourl));
+    json_escape(CONFIG_JKBMS_OTA_DEFAULT_URL, e_ourl_def, sizeof(e_ourl_def));
+    json_escape(vi.remote,           e_suv,  sizeof(e_suv));
 
     ESP_ERROR_CHECK(esp_efuse_mac_get_default(mac));
     snprintf(dev, sizeof(dev), "%02X%02X%02X%02X%02X%02X",
@@ -147,8 +153,10 @@ static esp_err_t h_config_json(httpd_req_t *req)
                  "\"ip\":\"%s\",\"mask\":\"%s\",\"gw\":\"%s\",\"dns\":\"%s\","
                  "\"uri\":\"%s\",\"user\":\"%s\",\"tls\":%s,\"dbg\":%s,"
                  "\"pw_set\":%s,\"pass_set\":%s,"
-                 "\"ota_url\":\"%s\",\"ota_status\":\"%s\","
-                 "\"app_version\":\"%s\",\"partition\":\"%s\",\"device_id\":\"%s\"}",
+                 "\"ota_url\":\"%s\",\"ota_default_url\":\"%s\",\"ota_status\":\"%s\","
+                 "\"app_version\":\"%s\",\"partition\":\"%s\",\"device_id\":\"%s\","
+                 "\"sw_update_checked\":%s,\"sw_update_available\":%s,"
+                 "\"checking\":%s,\"sw_update_version\":\"%s\"}",
                  cfg->use_dhcp ? "true" : "false",
                  e_ip, e_mask, e_gw, e_dns,
                  e_uri, e_user,
@@ -156,11 +164,16 @@ static esp_err_t h_config_json(httpd_req_t *req)
                  cfg->rs485_debug ? "true" : "false",
                  cfg->web_password[0] != '\0' ? "true" : "false",
                  cfg->mqtt_pass[0] != '\0' ? "true" : "false",
-                 CONFIG_JKBMS_OTA_DEFAULT_URL,
+                 e_ourl,
+                 e_ourl_def,
                  app_ota_last_status(),
                  app->version,
                  esp_ota_get_running_partition()->label,
-                 dev);
+                 dev,
+                 vi.checked ? "true" : "false",
+                 vi.checked && vi.available ? "true" : "false",
+                 vi.checking ? "true" : "false",
+                 e_suv);
     if (n < 0 || (size_t)n >= sizeof(buf)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON overflow");
         return ESP_FAIL;
@@ -250,6 +263,15 @@ static bool apply_key(app_config_t *new_c, const char *key, char *val, const cha
         new_c->mqtt_tls = flag;
     } else if (strcmp(key, "dbg") == 0) {
         new_c->rs485_debug = flag;
+    } else if (strcmp(key, "ota_url") == 0) {
+        /* Text-overwrite semantics: empty = clear -> the build-time default
+         * update URL is active again. Non-empty must be a firmware URL. */
+        ok = copy_field(new_c->ota_url, sizeof(new_c->ota_url), val);
+        if (ok && val[0] != '\0' &&
+            strncmp(val, "http://", 7) != 0 && strncmp(val, "https://", 8) != 0) {
+            *err = "update URL must start with http:// or https://";
+            return false;
+        }
     } else {
         return true;                                 /* unknown keys ignored */
     }
@@ -318,12 +340,16 @@ static esp_err_t h_save(httpd_req_t *req)
     new_c.use_dhcp = false;
     new_c.mqtt_tls = false;
     new_c.rs485_debug = false;
-    if (!parse_form(body, &new_c, &err) ||
-        (new_c.use_dhcp == false &&
-         (!app_config_valid_ipv4(new_c.static_ip) ||
-          !app_config_valid_ipv4(new_c.static_netmask) ||
-          !app_config_valid_ipv4(new_c.static_gateway) ||
-          !app_config_valid_ipv4(new_c.static_dns)))) {
+    if (!parse_form(body, &new_c, &err)) {
+        free(body);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, err);
+        return ESP_FAIL;
+    }
+    if (new_c.use_dhcp == false &&
+        (!app_config_valid_ipv4(new_c.static_ip) ||
+         !app_config_valid_ipv4(new_c.static_netmask) ||
+         !app_config_valid_ipv4(new_c.static_gateway) ||
+         !app_config_valid_ipv4(new_c.static_dns))) {
         free(body);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                             "invalid values (static mode needs all four IPv4 addresses)");
@@ -363,12 +389,12 @@ static esp_err_t h_ota_install(httpd_req_t *req)
         return ESP_FAIL;
     }
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
-    if (app_ota_start_default()) {
+    if (app_ota_start_configured()) {
         return httpd_resp_send(req, "Update gestartet (Status erscheint im 'Status'-Feld).", -1);
     }
     httpd_resp_set_status(req, "500 Internal Server Error");
     return httpd_resp_send(req,
-                           "Update nicht moeglich: keine Standard-URL (Build-Zeit) gesetzt oder "
+                           "Update nicht moeglich: weder manuelle noch Standard-URL gesetzt oder "
                            "bereits ein Update aktiv.", -1);
 }
 
@@ -381,12 +407,55 @@ static esp_err_t h_ota_status(httpd_req_t *req)
     return httpd_resp_send(req, app_ota_last_status(), -1);
 }
 
+static esp_err_t h_ota_check(httpd_req_t *req)
+{
+    if (!auth_ok(req)) {
+        return ESP_FAIL;
+    }
+    if (app_ota_effective_url()[0] == '\0') {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_send(req, "Keine Update-URL konfiguriert (manuell + Standard leer).", -1);
+    }
+    (void)app_ota_trigger_version_check();
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    return httpd_resp_send(req, "Pruefung gestartet - 'Update-Status' aktualisiert sich.", -1);
+}
+
+/* GET /ota/version: snapshot of the update check for the web UI. */
+static esp_err_t h_ota_version(httpd_req_t *req)
+{
+    app_ota_version_info_t vi;
+    char buf[192];
+    int n;
+
+    if (!auth_ok(req)) {
+        return ESP_FAIL;
+    }
+    app_ota_get_version_info(&vi);
+    n = snprintf(buf, sizeof(buf),
+                 "{\"installed\":\"%s\",\"remote\":\"%s\",\"available\":%s,"
+                 "\"checked\":%s,\"checking\":%s}",
+                 vi.installed, vi.remote,
+                 vi.checked && vi.available ? "true" : "false",
+                 vi.checked ? "true" : "false",
+                 vi.checking ? "true" : "false");
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON overflow");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, buf, n);
+}
+
 static const httpd_uri_t k_uris[] = {
     { .uri = "/",            .method = HTTP_GET,  .handler = h_index        },
     { .uri = "/config.json", .method = HTTP_GET,  .handler = h_config_json  },
     { .uri = "/save",        .method = HTTP_POST, .handler = h_save         },
     { .uri = "/ota/install", .method = HTTP_POST, .handler = h_ota_install  },
     { .uri = "/ota/status",  .method = HTTP_GET,  .handler = h_ota_status   },
+    { .uri = "/ota/check",   .method = HTTP_POST, .handler = h_ota_check    },
+    { .uri = "/ota/version", .method = HTTP_GET,  .handler = h_ota_version  },
 };
 
 /* ------------------------------------------------------------------ */

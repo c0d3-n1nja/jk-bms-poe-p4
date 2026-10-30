@@ -33,6 +33,7 @@ static const app_config_t s_defaults = {
     .mqtt_pass     = "",
     .mqtt_tls      = false,
     .rs485_debug   = false,
+    .ota_url       = "",
 };
 
 /* ------------------------------------------------------------------ */
@@ -107,6 +108,7 @@ void app_config_init(void)
     read_str(h, "pass",   s_cfg.mqtt_pass,      sizeof(s_cfg.mqtt_pass),      "");
     read_bool(h, "tls",   &s_cfg.mqtt_tls);
     read_bool(h, "dbg",   &s_cfg.rs485_debug);
+    read_str(h, "otaurl", s_cfg.ota_url,      sizeof(s_cfg.ota_url),      "");
 
     nvs_close(h);
 
@@ -152,6 +154,7 @@ bool app_config_save(const app_config_t *cfg)
     err |= nvs_set_str(h, "pass",cfg->mqtt_pass);
     err |= nvs_set_u8(h, "tls",  (uint8_t)(cfg->mqtt_tls ? 1 : 0));
     err |= nvs_set_u8(h, "dbg",  (uint8_t)(cfg->rs485_debug ? 1 : 0));
+    err |= nvs_set_str(h, "otaurl", cfg->ota_url);
     if (err == ESP_OK) {
         err = nvs_commit(h);
     }

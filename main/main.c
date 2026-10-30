@@ -345,6 +345,20 @@ static void poll_task(void *arg)
 static void on_eth_app_event(app_eth_event_t event)
 {
     if (event == APP_ETH_EVENT_GOT_IP) {
+        /* Console visibility of the running version next to the network
+         * data (the serial debug console shows the same on every boot). */
+        {
+            const app_eth_netinfo_t *ni = app_eth_get_netinfo();
+            const esp_app_desc_t *app = esp_app_get_description();
+            ESP_LOGI(TAG, "Firmware v%s | IP %s netmask %s gw %s | DNS %s backup %s",
+                     app->version,
+                     ni->have_ip ? ni->ip : "(none)",
+                     ni->have_ip ? ni->netmask : "-",
+                     ni->have_ip ? ni->gateway : "-",
+                     ni->have_ip ? ni->dns : "-",
+                     ni->have_ip ? ni->dns_backup : "-");
+        }
+        app_ota_trigger_version_check(); /* starts the checker on first IP */
         app_web_start();                     /* web UI/live config needs an IP */
         app_mqtt_start();                    /* idempotent, DNS resolved at connect time */
     } else {
@@ -442,6 +456,8 @@ void app_main(void)
         ESP_LOGI(TAG, "App %s v%s running from partition %s",
                  app->project_name, app->version,
                  esp_ota_get_running_partition()->label);
+        ESP_LOGI(TAG, "Update URL: %s (manual URL from web UI has priority)",
+                 app_ota_effective_url()[0] != '\0' ? app_ota_effective_url() : "(none)");
     }
 
     ESP_LOGI(TAG, "JK-BMS to MQTT bridge started (JK RS485 Modbus V1.0)");

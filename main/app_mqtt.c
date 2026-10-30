@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include "esp_log.h"
+#include "esp_app_desc.h"
+#include "esp_ota_ops.h"
 #include "mqtt_client.h"
 #include "esp_timer.h"
 #include "esp_mac.h"
@@ -11,6 +13,7 @@
 #include "app_mqtt.h"
 #include "app_ota.h"
 #include "app_config.h"
+#include "app_eth.h"
 
 static const char *TAG = "app_mqtt";
 
@@ -38,6 +41,7 @@ static char s_mqtt_available_topic[96];
 static char s_bms_available_topic[96];
 static char s_ota_topic[96];
 static char s_ota_status_topic[96];
+static char s_device_topic[96];
 
 /* Last known BMS state; initially offline until a valid poll succeeds. */
 static volatile bool s_bms_available = false;
@@ -73,6 +77,55 @@ void app_mqtt_publish_bms_available(bool available)
 void app_mqtt_publish_ota_status(const char *status)
 {
     publish(s_ota_status_topic, status, 1, true);
+}
+
+/**
+ * Device topic "<prefix>/device" (retained): one snapshot of the bridge
+ * itself - firmware version (build-time COMMIT from the app descriptor),
+ * device id and the effective network data (DHCP-leased or static),
+ * plus the result of the online update check from app_ota.
+ */
+void app_mqtt_publish_device_info(void)
+{
+    const app_eth_netinfo_t *ni = app_eth_get_netinfo();
+    app_ota_version_info_t vi;
+    const esp_app_desc_t *app;
+    char idf_ver[33];
+    char project[33];
+    char buf[512];
+    int n;
+
+    if (!s_connected) {
+        return;                                      /* republished on each connect */
+    }
+    app = esp_app_get_description();
+    app_ota_get_version_info(&vi);
+    memcpy(project, app->project_name, 32);          /* not always NUL-terminated */
+    project[32] = '\0';
+    memcpy(idf_ver, app->idf_ver, 32);
+    idf_ver[32] = '\0';
+
+    n = snprintf(buf, sizeof(buf),
+                 "{\"device_id\":\"%s\",\"project\":\"%s\",\"sw_version\":\"%s\","
+                 "\"idf_version\":\"%s\",\"partition\":\"%s\","
+                 "\"ip_mode\":\"%s\",\"ip\":\"%s\",\"netmask\":\"%s\",\"gateway\":\"%s\","
+                 "\"dns\":\"%s\",\"dns_backup\":\"%s\","
+                 "\"sw_update_available\":%s,\"sw_update_version\":\"%s\"}",
+                 s_dev_id, project, vi.installed, idf_ver,
+                 esp_ota_get_running_partition()->label,
+                 ni->use_dhcp ? "dhcp" : "static",
+                 ni->have_ip ? ni->ip : "",
+                 ni->have_ip ? ni->netmask : "",
+                 ni->have_ip ? ni->gateway : "",
+                 ni->have_ip ? ni->dns : "",
+                 ni->have_ip ? ni->dns_backup : "",
+                 vi.checked && vi.available ? "true" : "false",
+                 vi.remote);
+    if (n < 0 || (size_t)n >= sizeof(buf)) {
+        ESP_LOGW(TAG, "Device JSON overflow - skipped");
+        return;
+    }
+    publish(s_device_topic, buf, 1, true);
 }
 /* ------------------------------------------------------------------ */
 /* JSON state message                                                   */
@@ -410,6 +463,9 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_
                     s_bms_available ? "online" : "offline",
                     1, true);
 
+            /* Device snapshot (version/network/update-check), retained */
+            app_mqtt_publish_device_info();
+
         #if CONFIG_JKBMS_HA_DISCOVERY
             publish_discovery();
         #endif
@@ -511,6 +567,8 @@ esp_err_t app_mqtt_init(void)
     snprintf(s_ota_topic, sizeof(s_ota_topic), "%s/ota", CONFIG_JKBMS_TOPIC_PREFIX);
     snprintf(s_ota_status_topic, sizeof(s_ota_status_topic),
              "%s/ota/status", CONFIG_JKBMS_TOPIC_PREFIX);
+    snprintf(s_device_topic, sizeof(s_device_topic),
+             "%s/device", CONFIG_JKBMS_TOPIC_PREFIX);
 
     if (cfg->mqtt_uri[0] == '\0') {
         /* Runtime decision instead of a build option: without a broker URI

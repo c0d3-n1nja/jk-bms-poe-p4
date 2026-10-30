@@ -17,6 +17,7 @@ static const char *TAG = "app_eth";
 
 static app_eth_cb_t s_cb = NULL;
 static esp_eth_handle_t s_eth_handle = NULL;
+static app_eth_netinfo_t s_netinfo;      /* effective IP/DNS data (app_eth_get_netinfo) */
 
 /**
  * Applies the configured static IPv4 settings (config validated at save
@@ -88,6 +89,57 @@ static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *dat
     }
 }
 
+/** Dotted-quad or "" for an unset/0.0.0.0 address. */
+static void fmt_ip(const esp_ip4_addr_t *a, char dst[16])
+{
+    if (a->addr != 0) {
+        snprintf(dst, 16, IPSTR, IP2STR(a));
+    } else {
+        dst[0] = '\0';
+    }
+}
+
+/**
+ * Snapshots the effective IP/DNS set right after a GOT_IP event (which
+ * esp_netif raises for DHCP-leased addresses AND for a configured static
+ * address as soon as the link is up, see esp_netif_action_connected).
+ * Reading the DNS servers back from the netif reflects both modes
+ * automatically: static -> the manually set main DNS, DHCP -> the leased
+ * main resolver plus the optional user fallback (registered just above).
+ */
+static void cache_netinfo(const app_config_t *cfg, const ip_event_got_ip_t *ev)
+{
+    esp_netif_dns_info_t dns;
+    esp_netif_t *netif = ev->esp_netif ? ev->esp_netif
+                                       : esp_netif_get_handle_from_ifkey("ETH_DEF");
+
+    s_netinfo.have_ip  = true;
+    s_netinfo.use_dhcp = cfg->use_dhcp;
+    fmt_ip(&ev->ip_info.ip,      s_netinfo.ip);
+    fmt_ip(&ev->ip_info.netmask, s_netinfo.netmask);
+    fmt_ip(&ev->ip_info.gw,      s_netinfo.gateway);
+    s_netinfo.dns[0] = '\0';
+    s_netinfo.dns_backup[0] = '\0';
+    if (netif == NULL) {
+        return;                                      /* address data stays, DNS unknown */
+    }
+    memset(&dns, 0, sizeof(dns));
+    if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK &&
+        dns.ip.type == IPADDR_TYPE_V4) {
+        fmt_ip(&dns.ip.u_addr.ip4, s_netinfo.dns);
+    }
+    memset(&dns, 0, sizeof(dns));
+    if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns) == ESP_OK &&
+        dns.ip.type == IPADDR_TYPE_V4) {
+        fmt_ip(&dns.ip.u_addr.ip4, s_netinfo.dns_backup);
+    }
+}
+
+const app_eth_netinfo_t *app_eth_get_netinfo(void)
+{
+    return &s_netinfo;
+}
+
 static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     const app_config_t *cfg = app_config_get();
@@ -112,6 +164,7 @@ static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
             }
         }
     }
+    cache_netinfo(cfg, ev);
     if (s_cb) {
         s_cb(APP_ETH_EVENT_GOT_IP);
     }

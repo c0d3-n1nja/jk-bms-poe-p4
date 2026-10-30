@@ -34,3 +34,12 @@ void app_mqtt_publish_ota_status(const char *status);
  * The last known state is republished after MQTT reconnects.
  */
 void app_mqtt_publish_bms_available(bool available);
+
+/**
+ * Publishes device/platform data to "<prefix>/device" (retained):
+ * firmware version, device id, effective network data (IP/netmask/
+ * gateway/DNS, DHCP-leased or static) and the online update-check
+ * result ("sw_update_available"). Also called by app_ota after a
+ * completed version check so the retained message stays current.
+ */
+void app_mqtt_publish_device_info(void);

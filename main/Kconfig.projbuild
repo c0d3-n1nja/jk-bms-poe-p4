@@ -20,7 +20,7 @@ menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
     config JKBMS_RESET_BUTTON_GPIO
         int "Config-reset button GPIO (hold >= 10 s; -1 = disabled)"
         range -1 55
-        default 34
+        default 45
         help
             Holding this button (idle high, pressed = low) for at least 10 s
             erases the configuration partition ('cfg': web password, DHCP/
@@ -29,6 +29,27 @@ menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
             unreachable via its network settings. The BOOT button of the
             ESP32-P4 EV boards / M5Stack PoE-P4 sits on GPIO 34 (input-only
             strap pin; harmless as input). Set -1 to disable the feature.
+
+    config JKBMS_VERSION_URL
+        string "URL of the 'version' text file for the update check (http/https)"
+        default ""
+        help
+            Plain text file that contains the currently released version
+            ("v0.0.3"). Empty = derived automatically from the ACTIVE update
+            URL (manual URL from the web UI, else CONFIG_JKBMS_OTA_DEFAULT_URL):
+            the last path element is replaced by "version", e.g.
+            "https://github.com/.../releases/latest/download/jkbms_mqtt_poe_p4.bin"
+            becomes "https://github.com/.../releases/latest/download/version".
+
+    config JKBMS_VERSION_CHECK_INTERVAL_S
+        int "Automatic update check frequency (s; 0 = manual check only)"
+        range 0 999999
+        default 21600
+        help
+            How often the firmware fetches the "version" file automatically
+            (default 21600 s = 6 h). 0 disables the automatic check; the
+            check is then only performed on demand via the web UI or after
+            every reboot.
 
     config JKBMS_TOPIC_PREFIX
         string "MQTT topic prefix"

@@ -75,11 +75,11 @@ Die Konsole (`idf.py monitor`) laeuft ueber denselben USB-Port (USB-Serial-JTAG)
     |- config_page.html      # Web-UI (eingebettet in die Firmware)
     |- main.c                # RS485-UART, Framing, Polling-Task, Reset-Button, ETH/MQTT/Web-Verkabelung
     |- jkbms.h / jkbms.c     # JK-Modbus RTU: CRC16, FC-0x03-Frames, Block-Decoder (alle Felder)
-    |- app_config.h/.c       # Laufzeit-Konfig in eigener NVS-Partition 'cfg'
-    |- app_web.h/.c          # Web-UI (HTTP-Server): Konfiguration, MQTT-Trigger-OTA-Button
-    |- app_eth.h/.c          # EMAC + IP101GRI, DHCP oder statische IP, Ereignisse
-    |- app_mqtt.h/.c         # esp_mqtt: Broker (aus Laufzeit-Konfig), JSON-Status, HA-Autodiscovery
-    `- app_ota.h/.c          # OTA: MQTT-Trigger + Web-UI-Button, Rollback-Bestaetigung
+    |- app_config.h/.c       # Laufzeit-Konfig in eigener NVS-Partition 'cfg' (inkl. manueller Update-URL)
+    |- app_web.h/.c          # Web-UI (HTTP-Server): Konfiguration, OTA-Button, Update-Check
+    |- app_eth.h/.c          # EMAC + IP101GRI, DHCP oder statische IP, Ereignisse, Netzinfo-Cache
+    |- app_mqtt.h/.c         # esp_mqtt: Broker (aus Laufzeit-Konfig), JSON-Status, HA-Autodiscovery, Device-Topic
+    `- app_ota.h/.c          # OTA: MQTT-Trigger + Web-UI-Button, Rollback-Bestaetigung, Online-Update-Check
 ```
 
 ## Build & Flash
@@ -102,8 +102,9 @@ idf.py -p COM5 flash monitor      # Windows; unter Linux: /dev/ttyACM0 o.ae.
 - Download-Modus vorher aktivieren (Knopf 3 s - gruene LED).
 - Nach dem (Re)Flashen: normal starten (RST-Knopf oder Stecker). Logs:
 
-```
-I (...) jkbms: App ... v... running from partition ota_0
+```text
+I (...) jkbms: App ... v0.0.3 running from partition ota_0
+I (...) jkbms: Firmware v0.0.3 | IP ... 
 I (...) app_cfg: Config loaded: IP DHCP, MQTT (off), debug off
 I (...) app_eth: DHCP: IP 192.168.x.x, netmask ..., gateway ...
 I (...) app_web: Web UI up on port 80 (no password)
@@ -145,8 +146,13 @@ Die Seite (eingebettet in die Firmware, kein Internet noetig):
   eingebettete `ca_cert.pem`. Passwort leer lassen = unveraendert, Checkbox = entfernen.
 - **Diagnose**: RS485-Debug (Hexdump der Rohdaten im Log) zur Laufzeit an/aus.
   GPIO-Layouts und Polling-Parameter bleiben Buildzeit-Werte.
-- **Firmware-Update**: Button, der die bei Buildzeit hinterlegte Default-URL
-  (`CONFIG_JKBMS_OTA_DEFAULT_URL`) installiert; Status laeuft darunter mit.
+- **Firmware-Update**: Manuelle Update-URL (leer = die bei Buildzeit hinterlegte
+  Default-URL `CONFIG_JKBMS_OTA_DEFAULT_URL` wird verwendet) samt Button
+  "Manuelle URL zuruecksetzen" (leert das Feld - nach Speichern gilt wieder die
+  Default-URL). Der Button "Update von der aktiven URL installieren" installiert
+  von dieser URL; der Status laeuft darunter mit. Der Update-Check (regelmaessig
+  automatisch bzw. per "Jetzt pruefen") vergleicht die installierte Version gegen
+  eine remote-"version"-Datei und zeigt an, ob eine neuere Version verfuegbar ist.
 
 Nach "Speichern" antwortet der Webserver und das Geraet startet neu; erst dann sind die
 neuen Werte wirksam (Netzwerk, MQTT, Debug ...). Die laufende Konfig bleibt waehrend
@@ -158,7 +164,8 @@ ab jetzt jedes Update).
 
 **Werksreset (Recovery)**: Den BOOT-Knopf des Boards (default **GPIO45**, siehe
 `CONFIG_JKBMS_RESET_BUTTON_GPIO`, -1 = aus) mindestens **10 Sekunden** gedrueckt halten.
-Das loescht die Partition `cfg` komplett (Web-Passwort, IP-Einstellungen, MQTT, Debug) und
+Das loescht die Partition `cfg` komplett (Web-Passwort, IP-Einstellungen, MQTT, Debug,
+manuelle Update-URL) und
 startet neu in die Defaults: DHCP, Web-UI ohne Passwort, MQTT aus. Das ist der Weg zurueck,
 wenn ein statischer IP-Satz nicht mehr passt oder das Web-Passwort verloren geht - das Geraet
 reagiert dann wieder auf die frische DHCP-Adresse aus dem Router.
@@ -169,17 +176,38 @@ Alle Optionen unter **"Component config -> JK-BMS to MQTT Bridge (M5Stack Unit P
 
 | Option | Default | Bedeutung |
 |---|---|---|
-| `JKBMS_TOPIC_PREFIX` | `jkbms` | Topics `<prefix>/state`, `<prefix>/available`, `<prefix>/mqtt_available`, `<prefix>/ota(/status)` |
+| `APP_PROJECT_VER` | `v0.0.3` | **Software-Version** (Menü "Application manager", per `CONFIG_APP_PROJECT_VER_FROM_CONFIG=y` aus der sdkconfig - siehe Abschnitt "Software-Version / Releases"); landet im App-Deskriptor und wird in Log, Web-UI, MQTT und Update-Check verwendet |
+| `JKBMS_TOPIC_PREFIX` | `jkbms` | Topics `<prefix>/state`, `<prefix>/available`, `<prefix>/mqtt_available`, `<prefix>/device`, `<prefix>/ota(/status)` |
 | `JKBMS_HA_DISCOVERY` | y | Home-Assistant-Autodiscovery publishen (retained) |
 | `JKBMS_POLL_INTERVAL_MS` | 5000 | Lesezyklus "Read all registers" |
 | `JKBMS_CONFIG_READ_INTERVAL_MS` | 60000 | Re-Read-Intervall des Config-Blocks (Schutzparameter/Switches) in ms; dazwischen bleiben die letzten Werte stehen |
 | `JKBMS_STATE_HEARTBEAT_MS` | 60000 | State-Topic wird nur bei Aenderung gesendet; nach dieser Zeit folgt hoechstens ein Heartbeat-Publish |
 | `JKBMS_NO_RESPONSE_TIMEOUT_MS` | 30000 | Timeout bis "BMS offline" meldet |
 | `JKBMS_MODBUS_SLAVE_ADDR` | 1 | Modbus-RTU-Adresse des BMS (muss zum DIP-Switch passen) |
-| `JKBMS_OTA_DEFAULT_URL` | (leer) | Firmware-URL fuer den Web-UI-Update-Button; leer = Button deaktiviert (MQTT-Trigger wirkt weiterhin) |
+| `JKBMS_OTA_DEFAULT_URL` | (leer) | Default-Firmware-URL fuer den Web-UI-Update-Button (wird genutzt, wenn keine manuelle URL gesetzt ist) |
+| `JKBMS_VERSION_URL` | (leer) | URL der "version"-Textdatei fuer den Update-Check; leer = aus der aktiven Update-URL ableiten (letztes Pfadsegment durch `version` ersetzen) |
+| `JKBMS_VERSION_CHECK_INTERVAL_S` | 21600 | Automatischer Update-Check jede x Sekunden (21600 = 6 h); 0 = nur manuell ueber die Web-UI bzw. nach jedem Neustart |
 | `JKBMS_RESET_BUTTON_GPIO` | 45 | GPIO des Konfig-Reset-Knopfs (>= 10 s halten); -1 = aus |
 | RS485: `JKBMS_RS485_UART_NUM` / `RX` / `TX` / `DE` | 1 / 20 / 19 / 21 | UART + Pins (Pinmap wie oben) |
 | Ethernet: `JKBMS_ETH_MDC/MDIO/PHY_RST/PHY_ADDR` | 31 / 52 / 51 / 1 | Pinmap des U213-Boards |
+
+### Software-Version / Releases
+
+Die Versionsnummer steht **in `sdkconfig.defaults`** (Abschnitt "Software-Version"):
+
+```
+CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+CONFIG_APP_PROJECT_VER="v0.0.3"
+```
+
+Mit `CONFIG_APP_PROJECT_VER_FROM_CONFIG=y` landet der Wert direkt im App-Deskriptor
+(`esp_app_get_description()->version`); git-describe/buildzeitliche Alternativen werden
+ignoriert. Fuer ein Release genau diese eine Zeile (`CONFIG_APP_PROJECT_VER`) anpassen -
+die Version erscheint dann automatisch im Boot-Log, in der Web-UI, im MQTT-Device-Topic
+(`<prefix>/device`) und als Referenz des Online-Update-Checks. Nach dem Aendern der
+sdkconfig.defaults einmal `idf.py fullclean && idf.py set-target esp32p4 && idf.py build`
+(also Partitions-/Versionswerte neu einlesen; bei einem bestehenden `sdkconfig` wird
+der neue Wert sonst nicht uebernommen).
 
 Am schnellsten: `idf.py menuconfig` benutzen oder `sdkconfig.defaults` editieren und danach
 `idf.py fullclean && idf.py set-target esp32p4 && idf.py build` ausfuehren.
@@ -204,6 +232,20 @@ Am schnellsten: `idf.py menuconfig` benutzen oder `sdkconfig.defaults` editieren
  "balancing_switch":true,"charging_switch":true,"discharging_switch":true,
  "zusaetzlich alle Schutz-/Balance-Einstellungen, battery_type, device_type,
  software_version, manufacturer, protocol_version, total_runtime_h, ..."}
+```
+
+Zusätzlich gibt es `<prefix>/device` (retained) - einen Momentaufnahme-Status des
+Geraets **selbst**: Software-Version (aus der sdkconfig) sowie die aktuellen
+Netzwerkdaten (DHCP-leased oder statisch gesetzt) und das Ergebnis des
+Online-Update-Checks. Das Topic wird nach jedem MQTT-(Re)Connect und nach jedem
+fertigen Update-Check neu veroeffentlicht:
+
+```
+{"device_id":"ABCDEF123456","project":"jkbms_mqtt_poe_p4","sw_version":"v0.0.3",
+ "idf_version":"v5.4.4","partition":"ota_0","ip_mode":"dhcp",
+ "ip":"192.168.1.50","netmask":"255.255.255.0","gateway":"192.168.1.1",
+ "dns":"192.168.1.1","dns_backup":"",
+ "sw_update_available":false,"sw_update_version":""}
 ```
 
 Availability ist bewusst doppelt gefuehrt:
@@ -232,14 +274,30 @@ Registern ist nicht implementiert).
 
 ## OTA-Firmware-Update
 
-Zwei Ausloeser, gleicher Transport:
+Web-UI-Unabhaengig aktualisierbar; drei Ausloeser, gleicher Transport:
 
 1. **MQTT-Trigger**: firmware-artige URL (`http://...`/`https://...`) im Payload von
    `<prefix>/ota` publishen. Ablauf:
    - `idf.py build` -> `cd build` -> `python -m http.server 8000`
    - `mosquitto_pub -h <broker> -u <user> -P <pass> -t jkbms/ota -m "http://<PC-IP>:8000/jkbms_mqtt_poe_p4.bin"`
-2. **Web-UI-Button**: laedt von der Buildzeit-URL `CONFIG_JKBMS_OTA_DEFAULT_URL`
-   (default leer; `http://` ist erlaubt, siehe unten zum TLS-Verhalten).
+2. **Web-UI-Button**: laedt von der **aktiven Update-URL** - der in der Web-UI
+   eingetragenen manuellen URL, sonst (Feld leer) der Buildzeit-Default-URL
+   `CONFIG_JKBMS_OTA_DEFAULT_URL` (`http://` ist erlaubt, siehe unten zum
+   TLS-Verhalten). Mit "Manuelle URL zuruecksetzen" + Speichern gilt wieder
+   ausschliesslich die Default-URL.
+3. **Online-Update-Check** zeigt nur an, wechselt keine Firmware:
+   - Beim ersten IP-Up startet ein Hintergrund-Task, der regelmaessig
+     (`JKBMS_VERSION_CHECK_INTERVAL_S`, default 6 h) per HTTP-GET eine
+     Klartext-"version"-Datei laedt (fuer GitHub-Releases z. B. einfach eine
+     `version`-Datei ins Release legen, darin z. B. `v0.0.4`).
+   - Die URL ergibt sich aus der aktiven Update-URL (letztes Pfadsegment ->
+     `version`) oder aus `JKBMS_VERSION_URL`. `https://github.com/.../releases/
+     latest/download/version` folgt auch Redirects automatisch.
+   - Ist die remote-Version numerisch neuer als die installierte
+     (`CONFIG_APP_PROJECT_VER`), zeigt die Web-UI "**UPDATE VERFUEGBAR**"
+     unter "Update-Check" an und `<prefix>/device` enthaelt
+     `sw_update_available:true` samt Version. Installieren muss man dann
+     selbst (Button oder per Skript automatisiert).
 
 ### TLS-Server-Verifizierung aktuell DEAKTIVIERT (temporär, unsicher!)
 

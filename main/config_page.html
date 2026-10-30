@@ -73,15 +73,26 @@
 
 <fieldset>
   <legend>Firmware-Update</legend>
-  <p>Laufende Firmware: <code id="ver">–</code> aus Partition <code id="part">–</code></p>
+  <p>Installierte Software: <code id="ver">–</code> aus Partition <code id="part">–</code></p>
   <p>Standard-Update-URL (Build-Zeit): <code id="ourl">–</code></p>
-  <p><button type="button" id="obtn">Update von der Standard-URL installieren</button>
+  <label>Manuelle Update-URL (leer = Standard-URL verwenden)
+    <input type="text" id="otaurl" name="ota_url" maxlength="255" placeholder="https://example.org/jkbms_mqtt_poe_p4.bin" autocomplete="off">
+  </label>
+  <p><button type="button" id="ourl_reset">Manuelle URL zurücksetzen</button>
+     <span class="hint">Leere manuelle URL = der Update-Button nutzt wieder die Standard-URL
+       und der Update-Check fragt eine „version“-Datei daneben ab.</span></p>
+  <p>Update-Check: <code id="updinfo" class="status">noch nicht geprüft</code>
+     <button type="button" id="cbtn" style="margin-left:8px">Jetzt prüfen</button></p>
+  <p><button type="button" id="obtn">Update von der aktiven URL installieren</button>
      <span id="omsg"></span></p>
-  <p class="hint">Die neue Firmware bootet zunächst „pending verify“ und wird erst nach dem
-     ersten fehlerfreien BMS-Poll bestätigt; bootet sie nicht, rollt der Bootloader
-     automatisch zurück. MQTT-Trigger (<code>&lt;prefix&gt;/ota</code>) funktionieren
-     unabhängig davon mit beliebigen URLs.</p>
+  <p class="hint">Aktiv ist die manuelle URL, sonst die Standard-URL. Die Prüfung lädt nur eine
+     kleine „version“-Textdatei (regelmäßig sowie per „Jetzt prüfen“) und zeigt hier und über
+     MQTT (<code>&lt;prefix&gt;/device</code>) an, ob eine neuere Version verfügbar ist. Die neue
+     Firmware bootet zunächst „pending verify“ und wird erst nach dem ersten fehlerfreien
+     BMS-Poll bestätigt; bootet sie nicht, rollt der Bootloader automatisch zurück.
+     MQTT-Trigger (<code>&lt;prefix&gt;/ota</code>) funktionieren unabhängig davon mit beliebigen URLs.</p>
   <p>Status: <code id="ostat" class="status">idle</code></p>
+  <p id="cmsg"></p>
 </fieldset>
 
 <script>
@@ -97,6 +108,21 @@ function upd() {
   const dhcp = f.elements.dhcp.checked;
   $("staticfields").className = dhcp ? "off" : "";
   $("dnshint").className = dhcp ? "hint" : "hint off";
+}
+
+/* Text/class for the "Update-Check" line based on a version-state object
+ * (from /config.json or /ota/version). */
+function updInfoText(v) {
+  if (v.checking) return "Prüfung läuft…";
+  if (!v.checked) return "noch nicht geprüft";
+  if (v.available) return "UPDATE VERFÜGBAR: " + v.remote + " (installiert: " + v.installed + ")";
+  return "aktuell" + (v.remote ? " (remote: " + v.remote + ")" : "");
+}
+function applyUpdInfo(v) {
+  const t = updInfoText(v);
+  if (v.checked && v.available) show("updinfo", "err", t);
+  else if (v.checked) show("updinfo", "ok", t);
+  else show("updinfo", "", t);
 }
 
 f.elements.dhcp.addEventListener("change", upd);
@@ -120,6 +146,7 @@ f.addEventListener("submit", async (ev) => {
   if (f.elements.pw_clear.checked) q.set("pw_clear", "on");
   if (f.elements.pw.value.trim()) q.set("pw", f.elements.pw.value.trim());
   ["ip", "mask", "gw", "dns", "uri", "user"].forEach((n) => q.set(n, f.elements[n].value.trim()));
+  q.set("ota_url", $("otaurl").value.trim());
   if (f.elements.pass.value.trim()) q.set("pass", f.elements.pass.value.trim());
   if (f.elements.pass_clear.checked) q.set("pass_clear", "on");
   q.set("dhcp", f.elements.dhcp.checked ? "on" : "0");
@@ -134,8 +161,43 @@ f.addEventListener("submit", async (ev) => {
   }
 });
 
+$("ourl_reset").addEventListener("click", () => {
+  $("otaurl").value = "";
+  show("cmsg", "ok", "Manuelle URL geleert - speichern, um zur Standard-URL zurückzukehren.");
+});
+
+document.getElementById("cbtn").addEventListener("click", async () => {
+  const cbtn = document.getElementById("cbtn");
+  cbtn.disabled = true;
+  try {
+    const r = await fetch("/ota/check", { method: "POST" });
+    show("cmsg", r.ok ? "ok" : "err", await r.text());
+    if (!r.ok) { cbtn.disabled = false; return; }
+  } catch (e) {
+    show("cmsg", "err", "Anfrage fehlgeschlagen.");
+    cbtn.disabled = false;
+    return;
+  }
+  show("cmsg", "ok", "Prüfung läuft (dauert ein paar Sekunden)…");
+  /* Poll until the check completed (max ~45 s), then show the result. */
+  for (let i = 0; i < 45; i++) {
+    await new Promise((res) => setTimeout(res, 1000));
+    try {
+      const r = await fetch("/ota/version");
+      if (!r.ok) throw new Error(r.status);
+      const v = await r.json();
+      applyUpdInfo(v);
+      if (!v.checking) break;
+    } catch (e) {
+      /* device may reboot during the check */
+    }
+  }
+  show("cmsg", "", "");
+  cbtn.disabled = false;
+});
+
 $("obtn").addEventListener("click", async () => {
-  if (!confirm("Firmware von der Standard-URL laden, installieren und neu starten?")) return;
+  if (!confirm("Firmware von der aktiven URL laden, installieren und neu starten?")) return;
   $("obtn").disabled = true;
   try {
     const r = await fetch("/ota/install", { method: "POST" });
@@ -156,10 +218,16 @@ async function load() {
     f.elements.uri.value = cfg.uri; f.elements.user.value = cfg.user;
     f.elements.tls.checked = cfg.tls;
     f.elements.dbg.checked = cfg.dbg;
+    $("otaurl").value = cfg.ota_url || "";
     $("ver").textContent = cfg.app_version;
     $("part").textContent = cfg.partition;
-    $("ourl").textContent = cfg.ota_url ? cfg.ota_url : "(nicht gesetzt)";
+    $("ourl").textContent = cfg.ota_default_url ? cfg.ota_default_url : "(nicht gesetzt)";
     $("ostat").textContent = cfg.ota_status || "idle";
+    applyUpdInfo({
+      checked: cfg.sw_update_checked, available: cfg.sw_update_available,
+      checking: cfg.checking, remote: cfg.sw_update_version || "",
+      installed: cfg.app_version || ""
+    });
     $("meta").textContent = "Device-ID: jkbms-" + cfg.device_id +
       (cfg.pw_set ? " — Web-Passwort aktiv" : " — Web-Oberfläche ohne Passwort");
     upd();
