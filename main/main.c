@@ -24,6 +24,7 @@
 #include "app_ota.h"
 #include "app_config.h"
 #include "app_web.h"
+#include "app_log.h"
 
 static const char *TAG = "jkbms";
 
@@ -432,6 +433,8 @@ static void reset_button_task(void *arg)
 
 void app_main(void)
 {
+    app_log_init();     /* first of all: HTTP device-log mirror (captures boot lines) */
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());

@@ -19,6 +19,7 @@
 #include "app_web.h"
 #include "app_config.h"
 #include "app_ota.h"
+#include "app_log.h"
 
 static const char *TAG = "app_web";
 
@@ -451,6 +452,101 @@ static esp_err_t h_ota_version(httpd_req_t *req)
     return httpd_resp_send(req, buf, n);
 }
 
+/* ------------------------------------------------------------------ */
+/* Device log: /log = terminal page, /log/data = poll endpoint (JSON)   */
+/* ------------------------------------------------------------------ */
+
+/* Embedded terminal page (main/log_page.html) */
+extern const unsigned char log_page_start[] asm("_binary_log_page_html_start");
+extern const unsigned char log_page_end[]   asm("_binary_log_page_html_end");
+
+#define LOG_POLL_MAX_LINES 64
+
+static app_log_line_t s_logout[LOG_POLL_MAX_LINES];   /* poll result buffer */
+
+static esp_err_t h_log(httpd_req_t *req)
+{
+    if (!auth_ok(req)) {
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)log_page_start,
+                           (int)(log_page_end - log_page_start));
+}
+
+/** Poll endpoint of the terminal: GET /log/data?since=<seq>[&level=0..5][&clear=1].
+ *  Answers immediately (the httpd worker task must not block - a streaming
+ *  handler would stall /config.json & co. while the terminal is open).
+ *  Also acts as the viewer heartbeat: activates the log redirect to the
+ *  web ring while the terminal polls, deactivates itself after 10 s
+ *  without a poll (back to the console). */
+static esp_err_t h_log_data(httpd_req_t *req)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    char q[120];
+    char val[16];
+    char esc[800];
+    char line[900];
+    uint32_t since = 0, last = 0;
+    size_t n, w;
+    bool clear = false, reset = false, ok;
+
+    if (!auth_ok(req)) {
+        return ESP_FAIL;
+    }
+    if (httpd_req_get_url_query_len(req) > 0 &&
+        httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        if (httpd_query_key_value(q, "since", val, sizeof(val)) == ESP_OK) {
+            since = (uint32_t)strtoul(val, NULL, 10);
+        }
+        if (httpd_query_key_value(q, "level", val, sizeof(val)) == ESP_OK) {
+            (void)app_log_set_level(atoi(val));      /* dynamic log level */
+        }
+        if (httpd_query_key_value(q, "clear", val, sizeof(val)) == ESP_OK &&
+            strcmp(val, "1") == 0) {
+            clear = true;
+        }
+    }
+
+    app_log_viewer_touch();                          /* heartbeat + redirect */
+    if (clear) {
+        app_log_clear();
+    }
+    n = app_log_lines_since(since, &last, &reset, s_logout,
+                            sizeof(s_logout) / sizeof(s_logout[0]));
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    w = (size_t)snprintf(line, sizeof(line),
+                         "{\"last\":%lu,\"level\":%d,\"viewer\":%s,\"reset\":%s,"
+                         "\"app\":\"v%s\",\"lines\":[",
+                         (unsigned long)last,
+                         (int)esp_log_get_default_level(),
+                         app_log_viewer_active() ? "true" : "false",
+                         reset ? "true" : "false",
+                         app->version);
+    ok = (w > 0 && w < sizeof(line)) &&
+         httpd_resp_send_chunk(req, line, (ssize_t)w) == ESP_OK;
+
+    for (size_t i = 0; ok && i < n; i++) {
+        json_escape(s_logout[i].text, esc, sizeof(esc));
+        w = (size_t)snprintf(line, sizeof(line), "%s\"%s\"", i ? "," : "", esc);
+        ok = (w > 0 && w < sizeof(line)) &&
+             httpd_resp_send_chunk(req, line, (ssize_t)w) == ESP_OK;
+    }
+    if (ok) {
+        ok = httpd_resp_send_chunk(req, "]}", 2) == ESP_OK &&
+             httpd_resp_send_chunk(req, NULL, 0) == ESP_OK;
+    }
+    if (!ok) {
+        httpd_resp_send_chunk(req, NULL, 0);         /* terminate chunked resp */
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
 static const httpd_uri_t k_uris[] = {
     { .uri = "/",            .method = HTTP_GET,  .handler = h_index        },
     { .uri = "/config.json", .method = HTTP_GET,  .handler = h_config_json  },
@@ -459,6 +555,8 @@ static const httpd_uri_t k_uris[] = {
     { .uri = "/ota/status",  .method = HTTP_GET,  .handler = h_ota_status   },
     { .uri = "/ota/check",   .method = HTTP_POST, .handler = h_ota_check    },
     { .uri = "/ota/version", .method = HTTP_GET,  .handler = h_ota_version  },
+    { .uri = "/log",         .method = HTTP_GET,  .handler = h_log          },
+    { .uri = "/log/data",    .method = HTTP_GET,  .handler = h_log_data     },
 };
 
 /* ------------------------------------------------------------------ */

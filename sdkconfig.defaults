@@ -16,7 +16,7 @@ CONFIG_FREERTOS_HZ=1000
 # die zentrale Referenz fuer Web-UI, MQTT (<prefix>/device), Logs und den
 # Online-Update-Check. Fuer ein Release NUR hier aendern!) ----
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="v0.0.6"
+CONFIG_APP_PROJECT_VER="v0.0.7"
 
 # ---- Laufzeit-Konfiguration (Web-UI, NVS-Partition 'cfg') ----
 # Broker/Passwörter/Static-IP/TLS/Debug NICHT mehr hier eintragen -

@@ -51,6 +51,20 @@ menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
             check is then only performed on demand via the web UI or after
             every reboot.
 
+    config JKBMS_LOG_RING_KB
+        int "Device log RAM buffer served via HTTP (KB; 0 = off)"
+        range 0 64
+        default 16
+        help
+            The firmware mirrors its console log into a RAM line ring that
+            the terminal page at /log shows live (polling via /log/data).
+            While the terminal is open, the log output is redirected there
+            (esp_log_set_vprintf); the log level is selectable in the
+            terminal (esp_log_level_set "*") and restored when the viewer
+            closes (10 s without a poll). Useful for a PoE powered bridge
+            without an attached USB console; takes effect after a rebuild
+            + flash.
+
     config JKBMS_TOPIC_PREFIX
         string "MQTT topic prefix"
         default "jkbms"

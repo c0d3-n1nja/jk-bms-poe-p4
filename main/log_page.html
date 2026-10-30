@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JK-BMS – Gerätelog</title>
+<style>
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: #0a101e;
+    color: #cfe0fa;
+    font: 13px/1.5 Consolas, "Cascadia Code", Menlo, "Courier New", monospace;
+  }
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    align-items: center;
+    padding: 10px 16px;
+    background: #101a30;
+    border-bottom: 1px solid #22304d;
+  }
+  h1 { margin: 0; font-size: 14px; font-weight: 600; color: #eaf1ff; }
+  label { color: #8fa8cf; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+  select, button {
+    background: #1b2a47;
+    color: #cfe0fa;
+    border: 1px solid #2c4066;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover, select:hover { background: #233a63; }
+  .stat { margin-left: auto; font-size: 12px; color: #8fa8cf; }
+  .stat.live { color: #7ddc9a; }
+  #term {
+    margin: 0;
+    padding: 12px 16px 40px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    min-height: calc(100% - 120px);
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gerätelog <span id="app"></span></h1>
+  <label>Loglevel
+    <select id="lvl">
+      <option value="0">none</option>
+      <option value="1">error</option>
+      <option value="2">warn</option>
+      <option value="3">info</option>
+      <option value="4">debug</option>
+      <option value="5">verbose</option>
+    </select>
+  </label>
+  <button id="clr" type="button">Leeren</button>
+  <label><input type="checkbox" id="ascr" checked> Auto-Scroll</label>
+  <span class="stat" id="stat">verbinde …</span>
+</header>
+<pre id="term"></pre>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const term = $("term");
+let since = 0;
+let lines = 0;
+let busy = false;
+
+function append(l) {
+  term.textContent += l + "\n";
+  lines++;
+}
+function autoscroll() {
+  if ($("ascr").checked) {
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+}
+$("clr").addEventListener("click", () => {
+  term.textContent = "";
+  lines = 0;
+  fetch("/log/data?clear=1&since=" + since, { cache: "no-store" })
+    .then(poll).catch(() => {});
+});
+$("lvl").addEventListener("change", () => {
+  fetch("/log/data?level=" + $("lvl").value + "&since=" + since, { cache: "no-store" })
+    .then(poll).catch(() => {});
+});
+
+/* Polling loop: the HTTP server has a single worker task, so the endpoint
+ * answers immediately instead of streaming (which would block /config.json
+ * and friends while the terminal stays open). */
+async function poll() {
+  if (busy) return;
+  busy = true;
+  try {
+    const r = await fetch("/log/data?since=" + since, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    const j = await r.json();
+    if (j.reset) {
+      term.textContent = "";
+      lines = 0;
+    }
+    for (const l of (j.lines || [])) {
+      append(l);
+    }
+    since = j.last;
+    $("lvl").value = String(j.level);
+    $("app").textContent = j.app ? "(" + j.app + ")" : "";
+    const st = $("stat");
+    if (j.viewer) {
+      st.textContent = "live – Logausgabe auf dieses Fenster umgeleitet";
+      st.classList.add("live");
+    } else {
+      st.textContent = "historisch – serielle Konsole aktiv";
+      st.classList.remove("live");
+    }
+    autoscroll();
+  } catch (e) {
+    $("stat").textContent = "verbindung verloren …";
+    $("stat").classList.remove("live");
+  } finally {
+    busy = false;
+  }
+}
+poll();
+setInterval(poll, 600);
+</script>
+</body>
+</html>

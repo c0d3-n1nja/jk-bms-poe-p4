@@ -237,6 +237,11 @@
   <fieldset>
     <legend>Diagnose</legend>
     <label><input type="checkbox" name="dbg"> RS485-Debug (Hexdump der Rohdaten im Log)</label>
+    <p><button type="button" id="logbtn">Gerätelog öffnen (Terminal, neuer Tab)</button>
+       <span class="hint">Zeigt die Konsolenausgaben der Firmware live im Browser
+         (http://&lt;device-ip&gt;/log). Solange das Terminal pollt, wird die Logausgabe
+         dorthin umgeleitet und das Loglevel ist dort dynamisch wählbar; nach dem
+         Schließen läuft die serielle Konsole automatisch wieder weiter.</span></p>
   </fieldset>
 
   <div class="save-row">
@@ -382,6 +387,11 @@ $("obtn").addEventListener("click", async () => {
   } catch (e) {
     show("omsg", "err", "Anfrage fehlgeschlagen.");
   }
+});
+
+/* --- Device log terminal (opens /log in a new tab) ---------------- */
+$("logbtn").addEventListener("click", () => {
+  window.open("/log", "_blank", "noopener");
 });
 
 async function load() {

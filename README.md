@@ -81,10 +81,12 @@ Die Konsole (`idf.py monitor`) laeuft ueber denselben USB-Port (USB-Serial-JTAG)
     |- Kconfig.projbuild     # Buildzeit-Optionen (Pins, Polling, OTA-Default-URL, Reset-GPIO)
     |- ca_cert.pem           # CA fuer mqtts://, OTA-https und HTTP-Server (ausgeteilt beim Build)
     |- config_page.html      # Web-UI (eingebettet in die Firmware)
+    |- log_page.html         # Terminal-Seite des Geraetelogs (eingebettet, /log)
     |- main.c                # RS485-UART, Framing, Polling-Task, Reset-Button, ETH/MQTT/Web-Verkabelung
     |- jkbms.h / jkbms.c     # JK-Modbus RTU: CRC16, FC-0x03-Frames, Block-Decoder (alle Felder)
     |- app_config.h/.c       # Laufzeit-Konfig in eigener NVS-Partition 'cfg' (inkl. manueller Update-URL)
-    |- app_web.h/.c          # Web-UI (HTTP-Server): Konfiguration, OTA-Button, Update-Check
+    |- app_web.h/.c          # Web-UI (HTTP-Server): Konfiguration, OTA-Button, Update-Check, /log-Endpoints
+    |- app_log.h/.c          # Geraetelog: vprintf-Hook (esp_log_set_vprintf), Zeilen-Ring, Umlenkung
     |- app_eth.h/.c          # EMAC + IP101GRI, DHCP oder statische IP, Ereignisse, Netzinfo-Cache
     |- app_mqtt.h/.c         # esp_mqtt: Broker (aus Laufzeit-Konfig), JSON-Status, HA-Autodiscovery, Device-Topic
     `- app_ota.h/.c          # OTA: MQTT-Trigger + Web-UI-Button, Rollback-Bestaetigung, Online-Update-Check
@@ -154,6 +156,14 @@ Die Seite (eingebettet in die Firmware, kein Internet noetig):
   eingebettete `ca_cert.pem`. Passwort leer lassen = unveraendert, Checkbox = entfernen.
 - **Diagnose**: RS485-Debug (Hexdump der Rohdaten im Log) zur Laufzeit an/aus.
   GPIO-Layouts und Polling-Parameter bleiben Buildzeit-Werte.
+  Mit dem Button **"Geraetelog oeffnen"** oeffnet sich die Terminal-Seite
+  `http://<device-ip>/log` (neuer Tab, Monospace): Historie + Live-Ausgabe der
+  Firmware per Polling. Solange der Tab pollt, wird die Logausgabe per
+  `esp_log_set_vprintf` dorthin umgeleitet (die serielle Konsole pausiert) und
+  das Loglevel ist dort dynamisch waehlbar (`esp_log_level_set("*", ...)`).
+  10 s ohne Poll (Tab geschlossen) und die Ausgabe laeuft wieder auf die
+  Konsole, das vorherige Loglevel wird restauriert. Umfang des Log-Rings:
+  `JKBMS_LOG_RING_KB` (Buildzeit, default 16 KB).
 - **Firmware-Update**: Manuelle Update-URL (leer = die bei Buildzeit hinterlegte
   Default-URL `CONFIG_JKBMS_OTA_DEFAULT_URL` wird verwendet) samt Button
   "Manuelle URL zuruecksetzen" (leert das Feld - nach Speichern gilt wieder die
