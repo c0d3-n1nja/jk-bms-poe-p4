@@ -9,13 +9,73 @@
 </head>
 <body>
   <h1>JK-BMS PoE-P4 installieren</h1>
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JK-BMS PoE-P4 installieren</title>
+
+  <style>
+    #load-error {
+      display: none;
+      margin: 1em 0;
+      padding: 1em;
+      border: 1px solid #c62828;
+      border-radius: 6px;
+      background: #ffebee;
+      color: #b71c1c;
+    }
+  </style>
+
+  <script>
+    function checkInstaller() {
+      const errorBox = document.getElementById("load-error");
+
+      // Wurde die ESP-Web-Tools-Komponente registriert?
+      if (
+        !window.customElements ||
+        !customElements.get("esp-web-install-button")
+      ) {
+        errorBox.style.display = "block";
+      }
+    }
+
+    // Prüfen, nachdem das Dokument geladen wurde.
+    window.addEventListener("DOMContentLoaded", () => {
+      // Genug Zeit für das externe Modul zum Laden lassen.
+      setTimeout(checkInstaller, 3000);
+    });
+  </script>
+
+  <script
+    type="module"
+    src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module">
+  </script>
+</head>
+
+<body>
+  <h1>JK-BMS PoE-P4 installieren</h1>
+
   <p>
     Verbinde den M5Stack über ein USB-Datenkabel
     mit deinem Computer und starte die Installation.
   </p>
 
-  <esp-web-install-button
-    manifest="./manifest.json">
+  <div id="load-error" role="alert">
+    <strong>Der Firmware-Installer konnte nicht geladen werden.</strong>
+    <p>
+      Möglicherweise blockiert dein Browser oder ein Inhaltsfilter
+      den Zugriff auf unpkg.com.
+    </p>
+    <p>
+      Bitte erlaube den Zugriff auf
+      <code>unpkg.com</code> und lade diese Seite anschließend neu.
+    </p>
+  </div>
+
+  <esp-web-install-button manifest="./manifest.json">
   </esp-web-install-button>
 </body>
 </html>
