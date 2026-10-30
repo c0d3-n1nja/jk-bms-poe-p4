@@ -351,7 +351,7 @@ static void on_eth_app_event(app_eth_event_t event)
         {
             const app_eth_netinfo_t *ni = app_eth_get_netinfo();
             const esp_app_desc_t *app = esp_app_get_description();
-            ESP_LOGI(TAG, "Firmware v%s | IP %s netmask %s gw %s | DNS %s backup %s",
+            ESP_LOGI(TAG, "Firmware %s | IP %s netmask %s gw %s | DNS %s backup %s",
                      app->version,
                      ni->have_ip ? ni->ip : "(none)",
                      ni->have_ip ? ni->netmask : "-",
@@ -456,7 +456,7 @@ void app_main(void)
     {
         /* Which image is running and from which flash slot (OTA visibility) */
         const esp_app_desc_t *app = esp_app_get_description();
-        ESP_LOGI(TAG, "App %s v%s running from partition %s",
+        ESP_LOGI(TAG, "App %s %s running from partition %s",
                  app->project_name, app->version,
                  esp_ota_get_running_partition()->label);
         ESP_LOGI(TAG, "Update URL: %s (manual URL from web UI has priority)",

@@ -205,7 +205,7 @@ void app_ota_confirm_running_image(void)
     running = esp_ota_get_running_partition();
     desc = esp_app_get_description();
     if (esp_ota_get_state_partition(running, &state) == ESP_OK) {
-        ESP_LOGI(TAG, "App %s v%s running from %s (state %d)",
+        ESP_LOGI(TAG, "App %s %s running from %s (state %d)",
                  desc->project_name, desc->version, running->label, (int)state);
         if (state == ESP_OTA_IMG_PENDING_VERIFY) {
             /* Boot proven healthy: MQTT up + first successful BMS data */
@@ -213,7 +213,7 @@ void app_ota_confirm_running_image(void)
             ESP_LOGI(TAG, "Rollback pending cancelled - image marked valid");
         }
     } else {
-        ESP_LOGI(TAG, "App %s v%s running from %s", desc->project_name,
+        ESP_LOGI(TAG, "App %s %s running from %s", desc->project_name,
                  desc->version, running->label);
     }
     done = true;
@@ -328,7 +328,11 @@ static bool build_version_url(char *dst, size_t cap)
         (slash - 1 >= src && slash[-1] == '/')) {    /* host root "http://host" without path */
         return false;
     }
-    snprintf(dst, cap, "%.*sversion", (int)(slash - src), src);
+    /* keep everything up to AND INCLUDING the last '/' (slash - src + 1),
+     * then replace the last path element with "version":
+     * ".../releases/latest/download/jkbms_mqtt_poe_p4.bin"
+     *   -> ".../releases/latest/download/version" */
+    snprintf(dst, cap, "%.*sversion", (int)(slash - src + 1), src);
     return dst[0] != '\0' && strlen(dst) < cap;
 }
 

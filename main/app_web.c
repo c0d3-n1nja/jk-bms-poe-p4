@@ -521,7 +521,7 @@ static esp_err_t h_log_data(httpd_req_t *req)
 
     w = (size_t)snprintf(line, sizeof(line),
                          "{\"last\":%lu,\"level\":%d,\"viewer\":%s,\"reset\":%s,"
-                         "\"app\":\"v%s\",\"lines\":[",
+                         "\"app\":\"%s\",\"lines\":[",
                          (unsigned long)last,
                          (int)esp_log_get_default_level(),
                          app_log_viewer_active() ? "true" : "false",
@@ -570,6 +570,7 @@ esp_err_t app_web_start(void)
     if (s_srv != NULL) {
         return ESP_OK;                               /* already running */
     }
+    cfg.max_uri_handlers = (int)(sizeof(k_uris) / sizeof(k_uris[0]));
     cfg.stack_size = 8192;                           /* JSON build + form parse */
     err = httpd_start(&s_srv, &cfg);
     if (err != ESP_OK) {
