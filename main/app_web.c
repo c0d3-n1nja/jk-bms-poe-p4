@@ -100,7 +100,7 @@ static void json_escape(const char *src, char *dst, size_t cap)
 
 /* Scratch buffers for escaped strings (simple single-client usage). */
 static char e_ip[64], e_mask[64], e_gw[64], e_dns[64], e_uri[300], e_user[160];
-static char e_ourl[300], e_ourl_def[300], e_suv[80];
+static char e_ourl[300], e_ourl_def[300], e_suv[80], e_serr[120];
 
 /* ------------------------------------------------------------------ */
 /* Handlers                                                             */
@@ -143,6 +143,7 @@ static esp_err_t h_config_json(httpd_req_t *req)
     json_escape(cfg->ota_url,        e_ourl, sizeof(e_ourl));
     json_escape(CONFIG_JKBMS_OTA_DEFAULT_URL, e_ourl_def, sizeof(e_ourl_def));
     json_escape(vi.remote,           e_suv,  sizeof(e_suv));
+    json_escape(vi.error,            e_serr, sizeof(e_serr));
 
     ESP_ERROR_CHECK(esp_efuse_mac_get_default(mac));
     snprintf(dev, sizeof(dev), "%02X%02X%02X%02X%02X%02X",
@@ -156,7 +157,7 @@ static esp_err_t h_config_json(httpd_req_t *req)
                  "\"ota_url\":\"%s\",\"ota_default_url\":\"%s\",\"ota_status\":\"%s\","
                  "\"app_version\":\"%s\",\"partition\":\"%s\",\"device_id\":\"%s\","
                  "\"sw_update_checked\":%s,\"sw_update_available\":%s,"
-                 "\"checking\":%s,\"sw_update_version\":\"%s\"}",
+                 "\"checking\":%s,\"sw_update_version\":\"%s\",\"sw_update_error\":\"%s\"}",
                  cfg->use_dhcp ? "true" : "false",
                  e_ip, e_mask, e_gw, e_dns,
                  e_uri, e_user,
@@ -173,7 +174,8 @@ static esp_err_t h_config_json(httpd_req_t *req)
                  vi.checked ? "true" : "false",
                  vi.checked && vi.available ? "true" : "false",
                  vi.checking ? "true" : "false",
-                 e_suv);
+                 e_suv,
+                 e_serr);
     if (n < 0 || (size_t)n >= sizeof(buf)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON overflow");
         return ESP_FAIL;
@@ -434,11 +436,12 @@ static esp_err_t h_ota_version(httpd_req_t *req)
     app_ota_get_version_info(&vi);
     n = snprintf(buf, sizeof(buf),
                  "{\"installed\":\"%s\",\"remote\":\"%s\",\"available\":%s,"
-                 "\"checked\":%s,\"checking\":%s}",
+                 "\"checked\":%s,\"checking\":%s,\"error\":\"%s\"}",
                  vi.installed, vi.remote,
                  vi.checked && vi.available ? "true" : "false",
                  vi.checked ? "true" : "false",
-                 vi.checking ? "true" : "false");
+                 vi.checking ? "true" : "false",
+                 vi.error);
     if (n < 0 || (size_t)n >= sizeof(buf)) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON overflow");
         return ESP_FAIL;

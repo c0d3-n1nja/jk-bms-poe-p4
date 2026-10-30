@@ -299,13 +299,18 @@ Web-UI-Unabhaengig aktualisierbar; drei Ausloeser, gleicher Transport:
      Klartext-"version"-Datei laedt (fuer GitHub-Releases z. B. einfach eine
      `version`-Datei ins Release legen, darin z. B. `v0.0.4`).
    - Die URL ergibt sich aus der aktiven Update-URL (letztes Pfadsegment ->
-     `version`) oder aus `JKBMS_VERSION_URL`. `https://github.com/.../releases/
-     latest/download/version` folgt auch Redirects automatisch.
+     `version`) oder aus `JKBMS_VERSION_URL`. GitHub-Redirects werden
+     automatisch gefolgt.
    - Ist die remote-Version numerisch neuer als die installierte
      (`CONFIG_APP_PROJECT_VER`), zeigt die Web-UI "**UPDATE VERFUEGBAR**"
      unter "Update-Check" an und `<prefix>/device` enthaelt
      `sw_update_available:true` samt Version. Installieren muss man dann
      selbst (Button oder per Skript automatisiert).
+   - Misslingt die Pruefung (fehlende version-Datei, kein Netz, DNS ...),
+     zeigt die Web-UI die Ursache an ("Pruefung fehlgeschlagen: HTTP 404"
+     o. ae.) und `<prefix>/device` fuehrt sie in `sw_update_error`.
+     Fehlversuche werden bis zur ersten erfolgreichen Pruefung alle 60 s
+     wiederholt, danach im normalen Intervall.
 
 ### TLS-Server-Verifizierung aktuell DEAKTIVIERT (temporär, unsicher!)
 

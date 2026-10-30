@@ -30,6 +30,7 @@ typedef struct {
     bool checking;           /* a check is currently running */
     char installed[33];      /* version of the running image (app desc, max 32) */
     char remote[33];         /* fetched remote version, "" if never fetched */
+    char error[48];          /* last failure reason ("" if none/unknown) */
 } app_ota_version_info_t;
 
 /* ------------------------------------------------------------------ */

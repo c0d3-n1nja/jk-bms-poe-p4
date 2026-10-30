@@ -290,7 +290,7 @@ function upd() {
  * (from /config.json or /ota/version). */
 function updInfoText(v) {
   if (v.checking) return "Prüfung läuft…";
-  if (!v.checked) return "noch nicht geprüft";
+  if (!v.checked) return v.error ? "Prüfung fehlgeschlagen: " + v.error : "noch nicht geprüft";
   if (v.available) return "UPDATE VERFÜGBAR: " + v.remote + " (installiert: " + v.installed + ")";
   return "aktuell" + (v.remote ? " (remote: " + v.remote + ")" : "");
 }
@@ -298,6 +298,7 @@ function applyUpdInfo(v) {
   const t = updInfoText(v);
   if (v.checked && v.available) show("updinfo", "err", t);
   else if (v.checked) show("updinfo", "ok", t);
+  else if (v.error) show("updinfo", "err", t);
   else show("updinfo", "", t);
 }
 
@@ -402,7 +403,7 @@ async function load() {
     applyUpdInfo({
       checked: cfg.sw_update_checked, available: cfg.sw_update_available,
       checking: cfg.checking, remote: cfg.sw_update_version || "",
-      installed: cfg.app_version || ""
+      error: cfg.sw_update_error || "", installed: cfg.app_version || ""
     });
     $("meta").textContent = "Device-ID: jkbms-" + cfg.device_id +
       (cfg.pw_set ? " — Web-Passwort aktiv" : " — Web-Oberfläche ohne Passwort");

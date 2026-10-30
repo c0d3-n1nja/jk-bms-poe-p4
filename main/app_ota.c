@@ -2,6 +2,8 @@
  * See app_ota.h for the usage contract. */
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdarg.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -28,7 +30,8 @@ static const char *TAG = "app_ota";
 #define VER_READ_MAX     48       /* version string cap (few bytes expected) */
 #define VER_TASK_STACK   8192
 #define VER_POLL_MS      1000     /* scheduler tick: reads flags only      */
-#define VER_RETRY_MS     (60 * 1000)          /* retry after a failed check */
+#define VER_RETRY_US     ((int64_t)60 * 1000000)              /* failed check, before first success */
+#define VER_RETRY_SLOW_US ((int64_t)10 * 60 * 1000000)        /* failed check, after a success */
 #define VER_FALLBACK_US  ((int64_t)1000 * 1000 * 1000 * 60 * 60 * 24 * 365) /* no auto check */
 
 /* Reuse the CA certificate embedded for MQTTs (server verification). */
@@ -47,6 +50,7 @@ static volatile bool s_vchk_checked = false;     /* at least one fetch finished 
 static volatile bool s_vchk_available = false;   /* remote > installed         */
 static char s_installed[33] = "";                /* version of the running app */
 static char s_remote[VER_READ_MAX] = "";
+static char s_vchk_error[48] = "";               /* last failure reason for web/MQTT */
 static int64_t s_vchk_next_us = 0;               /* due time of the auto check */
 
 /* Every visible OTA state goes through here: keeps the last status for the
@@ -328,19 +332,74 @@ static bool build_version_url(char *dst, size_t cap)
     return dst[0] != '\0' && strlen(dst) < cap;
 }
 
+/**
+ * Collects HTTP_EVENT_ON_DATA body chunks (final status 200 only - the
+ * redirect bodies of GitHub are ignored) into a tiny buffer. This pattern
+ * with esp_http_client_perform() is REQUIRED here: perform() is the only
+ * API that follows redirects (GitHub serves the version file via a 302 to
+ * objects.githubusercontent.com); open()/fetch_headers()/read() would stop
+ * at the 302 with an empty body.
+ */
+typedef struct {
+    char buf[VER_READ_MAX];
+    int  len;
+    bool truncated;
+} ver_rx_t;
+
+static esp_err_t ver_http_event(esp_http_client_event_t *evt)
+{
+    ver_rx_t *rx = (ver_rx_t *)evt->user_data;
+
+    if (evt->event_id != HTTP_EVENT_ON_DATA || rx == NULL ||
+        evt->data == NULL || evt->data_len <= 0) {
+        return ESP_OK;
+    }
+    if (esp_http_client_get_status_code(evt->client) != 200) {
+        return ESP_OK;                                  /* 302/4xx body: ignore */
+    }
+    int space = (int)sizeof(rx->buf) - 1 - rx->len;
+    if (space <= 0) {
+        rx->truncated = true;
+        return ESP_OK;
+    }
+    int copy = evt->data_len < space ? evt->data_len : space;
+    memcpy(rx->buf + rx->len, evt->data, copy);
+    rx->len += copy;
+    if (copy < evt->data_len) {
+        rx->truncated = true;
+    }
+    return ESP_OK;
+}
+
+/** Stores the last failure reason (short, web/MQTT display friendly). */
+static void set_vchk_error(const char *fmt, ...)
+{
+    char tmp[48];
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(tmp, sizeof(tmp), fmt, args);
+    va_end(args);
+    tmp[sizeof(tmp) - 1] = '\0';
+    taskENTER_CRITICAL(&s_vchk_mux);
+    memcpy(s_vchk_error, tmp, sizeof(tmp));
+    taskEXIT_CRITICAL(&s_vchk_mux);
+}
+
 /** One synchronous fetch of the version file + compare + state update. */
 static void version_attempt(void)
 {
+    ver_rx_t rx = { .len = 0, .truncated = false };
     esp_http_client_config_t http = {
         .timeout_ms = 10000,
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
+        .event_handler = ver_http_event,
+        .user_data = &rx,
     };
     esp_http_client_handle_t client;
     const char *inst;      /* points into s_installed during the attempt */
-    char buf[VER_READ_MAX] = "";
     char url[VER_FILE_MAX];
-    int n_read = 0;
     int status = 0;
     bool ok = false;
 
@@ -352,6 +411,7 @@ static void version_attempt(void)
         /* Nothing configured/derivable: warn once, then wait for a manual
          * trigger (web UI or reboot) instead of retrying in a tight loop. */
         ESP_LOGW(TAG, "Version check skipped: no update URL configured (web UI + CONFIG_JKBMS_OTA_DEFAULT_URL)");
+        set_vchk_error("no update URL configured");
         s_vchk_next_us = esp_timer_get_time() + VER_FALLBACK_US;
         s_vchk_busy = false;
         return;
@@ -373,36 +433,31 @@ static void version_attempt(void)
         /* URL parse/config problem (DNS errors happen later, at open):
          * not retryable automatically -> manual trigger only. */
         ESP_LOGE(TAG, "Version check: esp_http_client_init failed for %s", url);
+        set_vchk_error("invalid URL");
         s_vchk_next_us = esp_timer_get_time() + VER_FALLBACK_US;
         s_vchk_busy = false;
         return;
     }
 
-    if (esp_http_client_open(client, 0) == ESP_OK) {
-        int hdr;
-        if ((hdr = esp_http_client_fetch_headers(client)) >= 0) {
-            status = esp_http_client_get_status_code(client);
-            while (n_read < (int)sizeof(buf) - 1) {
-                int r = esp_http_client_read(client, buf + n_read, 1);
-                if (r <= 0) {
-                    break;
-                }
-                n_read += r;
-            }
-            buf[n_read] = '\0';
-        } else {
-            ESP_LOGE(TAG, "Version check: fetch_headers failed (%s)", esp_err_to_name((esp_err_t)hdr));
-        }
-        esp_http_client_close(client);
-    } else {
-        ESP_LOGE(TAG, "Version check: connection to %s failed", url);
-    }
+    esp_err_t err = esp_http_client_perform(client);    /* follows redirects */
+    status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
-    if (status == 200 && n_read > 0) {
-        /* Trim everything ANSI printable around the actual token down to
-         * a plausible version string; reject anything else untrusted. */
-        char *p = buf, *e = buf + n_read;
+    if (err != ESP_OK) {
+        set_vchk_error("request failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "Version check: request to %s failed: %s", url, esp_err_to_name(err));
+    } else if (status != 200) {
+        set_vchk_error("HTTP %d", status);
+        ESP_LOGW(TAG, "Version check: HTTP %d from %s (version file present in the release?)", status, url);
+    } else if (rx.truncated) {
+        set_vchk_error("response too long");
+        ESP_LOGW(TAG, "Version check: response longer than %u bytes", (unsigned)(VER_READ_MAX - 1));
+    } else if (rx.len == 0) {
+        set_vchk_error("empty response");
+        ESP_LOGW(TAG, "Version check: empty response body");
+    } else {
+        /* Trim whitespace/CR/LF around the token, then trust-check it. */
+        char *p = rx.buf, *e = rx.buf + rx.len;
         while (p < e && *p <= ' ') {
             p++;
         }
@@ -422,28 +477,29 @@ static void version_attempt(void)
             s_vchk_checked = true;
             taskEXIT_CRITICAL(&s_vchk_mux);
             ok = true;
+            set_vchk_error("");
             if (newer) {
                 ESP_LOGW(TAG, "Update available: remote %s is newer than the running %s", candidate, inst);
             } else {
                 ESP_LOGI(TAG, "Version check: %s - running %s is up to date", candidate, inst);
             }
         } else {
-            ESP_LOGW(TAG, "Version check: '%s' does not look like a version string", buf);
+            set_vchk_error("invalid version data");
+            ESP_LOGW(TAG, "Version check: '%s' does not look like a version string", rx.buf);
         }
-    } else if (status != 0) {
-        ESP_LOGW(TAG, "Version check: HTTP %d from %s", status, url);
     }
 
-    /* Result / failure -> schedule the next automatic attempt. A successful
-     * check is repeated only after the configured interval; failures come
-     * back sooner (retry covers "link needs a moment" at boot). With the
-     * automatic check disabled (interval 0) there is no re-check at all:
-     * manual triggers (web UI / reboot) are the only other source. */
+    /* Result / failure -> schedule the next automatic attempt. Failures retry
+     * quickly UNTIL the first success (covers "network needs a moment" after
+     * boot); afterwards a broken server is only re-tried at the normal
+     * interval (or never, if the automatic check is disabled: manual only). */
     s_vchk_next_us = esp_timer_get_time();
     if (ok && CONFIG_JKBMS_VERSION_CHECK_INTERVAL_S > 0) {
         s_vchk_next_us += (int64_t)CONFIG_JKBMS_VERSION_CHECK_INTERVAL_S * 1000000;
+    } else if (!ok && CONFIG_JKBMS_VERSION_CHECK_INTERVAL_S > 0 && !s_vchk_checked) {
+        s_vchk_next_us += VER_RETRY_US;
     } else if (!ok && CONFIG_JKBMS_VERSION_CHECK_INTERVAL_S > 0) {
-        s_vchk_next_us += VER_RETRY_MS;
+        s_vchk_next_us += VER_RETRY_SLOW_US;
     } else {
         s_vchk_next_us += VER_FALLBACK_US;           /* manual check only */
     }
@@ -492,6 +548,7 @@ void app_ota_get_version_info(app_ota_version_info_t *out)
     get_installed_version(out->installed);
     taskENTER_CRITICAL(&s_vchk_mux);
     memcpy(out->remote, s_remote, sizeof(out->remote));
+    memcpy(out->error, s_vchk_error, sizeof(out->error));
     out->checked   = s_vchk_checked;
     out->available = s_vchk_available;
     out->checking  = s_vchk_busy;
