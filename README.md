@@ -181,7 +181,7 @@ Web-UI eintragen (alle Buildzeit-MQTT-Optionen sind entfallen; dafuer ueberlebt 
 ab jetzt jedes Update).
 
 **Werksreset (Recovery)**: Den BOOT-Knopf des Boards (default **GPIO45**, siehe
-`CONFIG_JKBMS_RESET_BUTTON_GPIO`, -1 = aus) mindestens **10 Sekunden** gedrueckt halten.
+`CONFIG_JKBMS_RESET_BUTTON_GPIO`, -1 = aus) 10 mal **innerhalb 15 Sekunden** druecken.
 Das loescht die Partition `cfg` komplett (Web-Passwort, IP-Einstellungen, MQTT, Debug,
 manuelle Update-URL) und
 startet neu in die Defaults: DHCP, Web-UI ohne Passwort, MQTT aus. Das ist der Weg zurueck,
@@ -194,7 +194,7 @@ Alle Optionen unter **"Component config -> JK-BMS to MQTT Bridge (M5Stack Unit P
 
 | Option | Default | Bedeutung |
 |---|---|---|
-| `APP_PROJECT_VER` | `v0.0.3` | **Software-Version** (Menü "Application manager", per `CONFIG_APP_PROJECT_VER_FROM_CONFIG=y` aus der sdkconfig - siehe Abschnitt "Software-Version / Releases"); landet im App-Deskriptor und wird in Log, Web-UI, MQTT und Update-Check verwendet |
+| `APP_PROJECT_VER` | `v0.0.9` | **Software-Version** (Menü "Application manager", per `CONFIG_APP_PROJECT_VER_FROM_CONFIG=y` aus der sdkconfig - siehe Abschnitt "Software-Version / Releases"); landet im App-Deskriptor und wird in Log, Web-UI, MQTT und Update-Check verwendet |
 | `JKBMS_TOPIC_PREFIX` | `jkbms` | Topics `<prefix>/state`, `<prefix>/available`, `<prefix>/mqtt_available`, `<prefix>/device`, `<prefix>/ota(/status)` |
 | `JKBMS_HA_DISCOVERY` | y | Home-Assistant-Autodiscovery publishen (retained) |
 | `JKBMS_POLL_INTERVAL_MS` | 5000 | Lesezyklus "Read all registers" |

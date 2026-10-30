@@ -369,60 +369,160 @@ static void on_eth_app_event(app_eth_event_t event)
 }
 
 /* ------------------------------------------------------------------ */
-/* Config-reset button: hold >= 10 s -> erase config partition, reboot   */
+/* Config-reset button: 10 short clicks -> erase config, reboot        */
 /* ------------------------------------------------------------------ */
 
-#define RESET_HOLD_MS  10000
-#define RESET_POLL_MS  30
+#define RESET_CLICK_COUNT       10
+#define RESET_SEQUENCE_MS       15000
+#define RESET_CLICK_GAP_MS      2000
+#define RESET_DEBOUNCE_MS       30
+#define RESET_MAX_PRESS_MS      800
+#define RESET_POLL_MS           10
 
 /**
- * Recovery path for an unreachable device (e.g. a static IP that no longer
- * fits the network, or a forgotten web password): holding the button for
- * at least 10 seconds erases the configuration partition and reboots into
- * the defaults - DHCP, unchanged RS485 values, web UI without password and
- * MQTT off. The bridge is then reachable only via the address it gets from
- * the DHCP server (router lease table). Erasing NVS here is safe: the
- * next boot re-initializes (formats) the partition.
+ * Recovery path for an unreachable device.
+ *
+ * Factory reset is triggered by 10 short button clicks:
+ * - at most 2 seconds between completed clicks
+ * - complete sequence within 15 seconds
+ * - each press must be <= 800 ms
+ * - button is active-low, with internal pull-up
+ *
+ * Long presses are deliberately ignored. Do not hold the button:
+ * the PoE-P4 may enter its ROM download mode independently of this task.
  */
 static void reset_button_task(void *arg)
 {
 #if CONFIG_JKBMS_RESET_BUTTON_GPIO >= 0
-    const gpio_num_t pin = (gpio_num_t)CONFIG_JKBMS_RESET_BUTTON_GPIO;
+    const gpio_num_t pin =
+        (gpio_num_t)CONFIG_JKBMS_RESET_BUTTON_GPIO;
+
+    const int64_t debounce_us =
+        (int64_t)RESET_DEBOUNCE_MS * 1000;
+    const int64_t max_press_us =
+        (int64_t)RESET_MAX_PRESS_MS * 1000;
+    const int64_t max_gap_us =
+        (int64_t)RESET_CLICK_GAP_MS * 1000;
+    const int64_t sequence_us =
+        (int64_t)RESET_SEQUENCE_MS * 1000;
+
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << (int)pin),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,    /* idle high, pressed = low */
+        .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
 
     (void)arg;
-    gpio_config(&io);
-    ESP_LOGI(TAG, "Config reset button on GPIO %d (hold >= %d s)",
-             (int)pin, RESET_HOLD_MS / 1000);
+
+    ESP_ERROR_CHECK(gpio_config(&io));
+
+    int raw_level = gpio_get_level(pin);
+    int candidate_level = raw_level;
+    int stable_level = raw_level;
+
+    int64_t candidate_since = esp_timer_get_time();
+    int64_t press_started = 0;
+    int64_t first_click_time = 0;
+    int64_t last_click_time = 0;
+
+    unsigned int click_count = 0;
+
+    ESP_LOGI(TAG,
+             "Config reset button on GPIO %d: "
+             "%d short clicks within %d s",
+             (int)pin,
+             RESET_CLICK_COUNT,
+             RESET_SEQUENCE_MS / 1000);
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(RESET_POLL_MS));
-        if (gpio_get_level(pin) == 0) {
-            int64_t start = esp_timer_get_time();
 
-            ESP_LOGI(TAG, "Reset button pressed (GPIO %d)", (int)pin);
-            while (gpio_get_level(pin) == 0 &&
-                   esp_timer_get_time() - start < RESET_HOLD_MS * 1000) {
-                vTaskDelay(pdMS_TO_TICKS(RESET_POLL_MS));
+        int64_t now = esp_timer_get_time();
+        raw_level = gpio_get_level(pin);
+
+        /* Debounce: accept a new level only after it stays stable. */
+        if (raw_level != candidate_level) {
+            candidate_level = raw_level;
+            candidate_since = now;
+        }
+
+        if (candidate_level != stable_level &&
+            now - candidate_since >= debounce_us) {
+
+            stable_level = candidate_level;
+
+            if (stable_level == 0) {
+                /* Button pressed (active-low). */
+                press_started = now;
+
+                ESP_LOGD(TAG, "Reset button pressed");
+            } else {
+                /* Button released: count only short clicks. */
+                int64_t press_duration = now - press_started;
+
+                if (press_duration < debounce_us ||
+                    press_duration > max_press_us) {
+                    if (click_count != 0) {
+                        ESP_LOGI(TAG,
+                                 "Reset sequence cancelled: "
+                                 "invalid press duration");
+                    }
+
+                    click_count = 0;
+                    first_click_time = 0;
+                    last_click_time = 0;
+                    continue;
+                }
+
+                /* Expired gap or overall sequence? Start anew. */
+                if (click_count != 0 &&
+                    (now - last_click_time > max_gap_us ||
+                     now - first_click_time > sequence_us)) {
+                    ESP_LOGI(TAG,
+                             "Reset sequence timed out; restarting");
+                    click_count = 0;
+                    first_click_time = 0;
+                    last_click_time = 0;
+                }
+
+                if (click_count == 0) {
+                    first_click_time = now;
+                }
+
+                last_click_time = now;
+                click_count++;
+
+                ESP_LOGI(TAG,
+                         "Reset click %u/%u",
+                         click_count,
+                         RESET_CLICK_COUNT);
+
+                if (click_count >= RESET_CLICK_COUNT) {
+                    ESP_LOGW(TAG,
+                             "%u clicks detected -> factory reset",
+                             RESET_CLICK_COUNT);
+
+                    app_config_factory_reset();
+                    esp_restart();  /* never returns */
+                }
             }
-            if (gpio_get_level(pin) == 0) {  /* still held after the timeout */
-                ESP_LOGW(TAG, "Reset button held for %d s -> factory reset",
-                         RESET_HOLD_MS / 1000);
-                app_config_factory_reset();
-                esp_restart();               /* never returns */
-            }
-            ESP_LOGI(TAG, "Reset button released below %d s - config kept",
-                     RESET_HOLD_MS / 1000);
+        }
+
+        /* Expire an incomplete sequence even if no further click occurs. */
+        if (click_count != 0 &&
+            (now - last_click_time > max_gap_us ||
+             now - first_click_time > sequence_us)) {
+            ESP_LOGD(TAG, "Reset click sequence expired");
+            click_count = 0;
+            first_click_time = 0;
+            last_click_time = 0;
         }
     }
 #else
     (void)arg;
+
     for (;;) {
         vTaskDelay(portMAX_DELAY);
     }
