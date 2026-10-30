@@ -54,7 +54,7 @@ UART-Parameter: 115200 Baud, 8N1 (Fixwert, im Polling-Task in main.c).
 1. Chrome oder Edge auf einem Desktop oeffnen
 2. Ein USB-Datenkabel an den USB-C-Anschluss fuer Firmware-Download/OTG (Der Anschluss direkt neben dem Netzwerk-Port) anschliessen, nicht an den Host-Anschluss
 3. Das Geraet nach der M5Stack-Anleitung in den Download-Modus versetzen: Seitentaste etwa 3 Sekunden gedrueckt halten, bis die gruene LED leuchtet.
-4. Auf den [Web Installer](https://raw.githubusercontent.com/c0d3-n1nja/jk-bms-poe-p4/refs/heads/main/web-installer/installer.html) wechseln, auf den Button Connect klicken, das passende USB-Geraet im Browser auswaehlen und den Zugriff freigeben.
+4. Auf den [Web Installer](https://c0d3-n1nja.github.io/jk-bms-poe-p4/web-installer/) wechseln, auf den Button Connect klicken, das passende USB-Geraet im Browser auswaehlen und den Zugriff freigeben.
 5. Das Flashen vollstaendig abwarten und das Geraet neu starten lassen.
 
 ### Flashen (manuell ueber Download-Modus)
