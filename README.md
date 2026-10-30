@@ -1,5 +1,10 @@
 # JK-BMS (v15) → MQTT Bridge for M5Stack Unit PoE-P4 (U213, old revision)
 
+#### (Choose your language below / Wähle deine Sprache aus)
+[![English](https://img.shields.io/badge/Language-English-blue)](README.md)
+[![Deutsch](https://img.shields.io/badge/Language-Deutsch-green)](README.de.md)
+---
+
 This stack reads a **JK-BMS (firmware v15, 16S LiFePO4, 5 temperature sensors)** through a
 dedicated **RS485 port** (SP3485 transceiver on GPIO19/20/21) and publishes all
 balancer/status data via **MQTT** over **Ethernet/PoE**. The device is configured
