@@ -54,9 +54,18 @@ static void ota_task(void *arg)
 
     running = esp_ota_get_running_partition();
 
+#if CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+    /* TEMPORARY insecure mode (CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y):
+     * no CA is attached, esp-tls runs with MBEDTLS_SSL_VERIFY_NONE. The
+     * embedded ca_cert.pem is still a placeholder, so attach it only once
+     * it holds the real CA chain. */
+    ESP_LOGW(TAG, "OTA https: TLS server verification DISABLED (temporary)");
+#else
     if (strncmp(s_url, "https://", 8) == 0) {
+        /* Server verification: accept only certs rooted in the embedded CA. */
         http.cert_pem = (const char *)server_ca_pem_start;
     }
+#endif
 
     set_status("download started");
     ESP_LOGI(TAG, "OTA download started: %s (running from %s)", s_url, running->label);

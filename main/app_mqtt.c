@@ -532,6 +532,12 @@ esp_err_t app_mqtt_init(void)
         }
     }
     if (strncmp(s_uri_eff, "mqtts://", 8) == 0) {
+#if CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY
+        /* TEMPORARY insecure mode: TLS still encrypts, but the broker
+         * certificate is not validated (embedded ca_cert.pem is a
+         * placeholder). Remove once ca_cert.pem holds the real chain. */
+        ESP_LOGW(TAG, "MQTTs: TLS server verification DISABLED (temporary)");
+#else
         /* The CA certificate embedded at build time is the verification
          * source for the TLS session. */
         mcfg.broker.verification.certificate = (const char *)server_ca_pem_start;
@@ -539,6 +545,7 @@ esp_err_t app_mqtt_init(void)
             (size_t)(server_ca_pem_end - server_ca_pem_start);
         ESP_LOGI(TAG, "MQTTs enabled (CA %u bytes)",
                  (unsigned)mcfg.broker.verification.certificate_len);
+#endif
     }
 
     /* Auth troubleshooting: what is actually attached to the CONNECT
