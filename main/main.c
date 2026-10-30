@@ -11,15 +11,25 @@
 #include "esp_check.h"
 #include "esp_rom_sys.h"
 #include "nvs_flash.h"
+#include "esp_system.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
+#include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "sdkconfig.h"
 
 #include "jkbms.h"
 #include "app_eth.h"
 #include "app_mqtt.h"
+#include "app_ota.h"
+#include "app_config.h"
+#include "app_web.h"
 
 static const char *TAG = "jkbms";
+
+/* Live config reference (assigned once after app_config_init; the config
+ * is immutable until the next reboot). */
+static const app_config_t *s_cfg = NULL;
 
 #define RS485_UART       ((uart_port_t)CONFIG_JKBMS_RS485_UART_NUM)
 #define RS485_BAUD       115200
@@ -109,7 +119,7 @@ static void rs485_init(void)
     gpio_set_level(CONFIG_JKBMS_RS485_DE_GPIO, 0);
 }
 
-#ifdef CONFIG_JKBMS_RS485_DEBUG
+/* Raw traffic hexdump; runtime-gated via the web UI debug switch. */
 static void hexlog(const char *what, const uint8_t *b, size_t n)
 {
     char line[76];
@@ -124,7 +134,6 @@ static void hexlog(const char *what, const uint8_t *b, size_t n)
         ESP_LOGI(TAG, "%s", line);
     }
 }
-#endif
 
 /* ------------------------------------------------------------------ */
 /* Modbus transaction: send one FC 0x03 request, read one response      */
@@ -147,9 +156,9 @@ static bool rs485_transaction(uint16_t start_reg, uint16_t count, uint8_t *resp,
 
     gpio_set_level(CONFIG_JKBMS_RS485_DE_GPIO, 1);   /* transmit enable */
     esp_rom_delay_us(RS485_TX_SETTLE_US);
-#ifdef CONFIG_JKBMS_RS485_DEBUG
-    hexlog("TX", req, frame_len);
-#endif
+    if (s_cfg->rs485_debug) {
+        hexlog("TX", req, frame_len);
+    }
     uart_write_bytes(RS485_UART, (const char *)req, frame_len);
     uart_wait_tx_done(RS485_UART, pdMS_TO_TICKS(100));
     esp_rom_delay_us(RS485_TX_SETTLE_US);            /* allow the last stop bit to run out */
@@ -163,9 +172,9 @@ static bool rs485_transaction(uint16_t start_reg, uint16_t count, uint8_t *resp,
         }
         n = uart_read_bytes(RS485_UART, resp + got, expected - got, pdMS_TO_TICKS(20));
         if (n > 0) {
-#ifdef CONFIG_JKBMS_RS485_DEBUG
-            hexlog("RX", resp + got, (size_t)n);
-#endif
+            if (s_cfg->rs485_debug) {
+                hexlog("RX", resp + got, (size_t)n);
+            }
             got += (size_t)n;
         }
     }
@@ -306,6 +315,10 @@ static void poll_once(void)
 
     jkbms_finalize(&s_data);
     publish_current_state();
+
+    /* First healthy poll cycle after boot: confirm the running OTA image
+     * (cancels the bootloader rollback-pending state; idempotent). */
+    app_ota_confirm_running_image();
 }
 
 static void poll_task(void *arg)
@@ -332,10 +345,73 @@ static void poll_task(void *arg)
 static void on_eth_app_event(app_eth_event_t event)
 {
     if (event == APP_ETH_EVENT_GOT_IP) {
-        app_mqtt_start();                                /* idempotent, DNS is resolved at connect time */
+        app_web_start();                     /* web UI/live config needs an IP */
+        app_mqtt_start();                    /* idempotent, DNS resolved at connect time */
     } else {
-        app_mqtt_stop();                                 /* on link down: reconnect with new IP/DNS */
+        app_web_stop();                      /* also on link down: restart after re-IP */
+        app_mqtt_stop();                     /* reconnect with new IP/DNS */
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Config-reset button: hold >= 10 s -> erase config partition, reboot   */
+/* ------------------------------------------------------------------ */
+
+#define RESET_HOLD_MS  10000
+#define RESET_POLL_MS  30
+
+/**
+ * Recovery path for an unreachable device (e.g. a static IP that no longer
+ * fits the network, or a forgotten web password): holding the button for
+ * at least 10 seconds erases the configuration partition and reboots into
+ * the defaults - DHCP, unchanged RS485 values, web UI without password and
+ * MQTT off. The bridge is then reachable only via the address it gets from
+ * the DHCP server (router lease table). Erasing NVS here is safe: the
+ * next boot re-initializes (formats) the partition.
+ */
+static void reset_button_task(void *arg)
+{
+#if CONFIG_JKBMS_RESET_BUTTON_GPIO >= 0
+    const gpio_num_t pin = (gpio_num_t)CONFIG_JKBMS_RESET_BUTTON_GPIO;
+    gpio_config_t io = {
+        .pin_bit_mask = (1ULL << (int)pin),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,    /* idle high, pressed = low */
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    (void)arg;
+    gpio_config(&io);
+    ESP_LOGI(TAG, "Config reset button on GPIO %d (hold >= %d s)",
+             (int)pin, RESET_HOLD_MS / 1000);
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(RESET_POLL_MS));
+        if (gpio_get_level(pin) == 0) {
+            int64_t start = esp_timer_get_time();
+
+            ESP_LOGI(TAG, "Reset button pressed (GPIO %d)", (int)pin);
+            while (gpio_get_level(pin) == 0 &&
+                   esp_timer_get_time() - start < RESET_HOLD_MS * 1000) {
+                vTaskDelay(pdMS_TO_TICKS(RESET_POLL_MS));
+            }
+            if (gpio_get_level(pin) == 0) {  /* still held after the timeout */
+                ESP_LOGW(TAG, "Reset button held for %d s -> factory reset",
+                         RESET_HOLD_MS / 1000);
+                app_config_factory_reset();
+                esp_restart();               /* never returns */
+            }
+            ESP_LOGI(TAG, "Reset button released below %d s - config kept",
+                     RESET_HOLD_MS / 1000);
+        }
+    }
+#else
+    (void)arg;
+    for (;;) {
+        vTaskDelay(portMAX_DELAY);
+    }
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -349,17 +425,38 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    ESP_ERROR_CHECK(app_mqtt_init());
+    app_config_init();                       /* dedicated 'cfg' NVS partition */
+    s_cfg = app_config_get();                /* immutable until next reboot */
+
+    ESP_ERROR_CHECK(app_mqtt_init());        /* prepared; started once IP is up */
     rs485_init();
 
     xTaskCreate(poll_task, "jk_poll", 4096, NULL, 4, NULL);
+    xTaskCreate(reset_button_task, "cfg_reset", 3072, NULL, 2, NULL);
 
-    ESP_ERROR_CHECK(app_eth_init(on_eth_app_event));
+    ESP_ERROR_CHECK(app_eth_init(on_eth_app_event)); /* web server starts on GOT_IP */
+
+    {
+        /* Which image is running and from which flash slot (OTA visibility) */
+        const esp_app_desc_t *app = esp_app_get_description();
+        ESP_LOGI(TAG, "App %s v%s running from partition %s",
+                 app->project_name, app->version,
+                 esp_ota_get_running_partition()->label);
+    }
 
     ESP_LOGI(TAG, "JK-BMS to MQTT bridge started (JK RS485 Modbus V1.0)");
-    ESP_LOGI(TAG, "MQTT broker (built in): %s", CONFIG_JKBMS_MQTT_URI);
-    ESP_LOGI(TAG, "MQTT prefix: %s | Polling interval: %d ms | Modbus slave addr: %d",
-             CONFIG_JKBMS_TOPIC_PREFIX, CONFIG_JKBMS_POLL_INTERVAL_MS, MODBUS_ADDR);
+    ESP_LOGI(TAG, "MQTT: %s%s | prefix: %s",
+             s_cfg->mqtt_uri[0] != '\0' ? s_cfg->mqtt_uri : "(not configured - web UI)",
+             s_cfg->mqtt_tls ? " +TLS" : "",
+             CONFIG_JKBMS_TOPIC_PREFIX);
+    ESP_LOGI(TAG, "Poll interval: %d ms | Modbus slave addr: %d | RS485 debug: %s",
+             CONFIG_JKBMS_POLL_INTERVAL_MS, MODBUS_ADDR, s_cfg->rs485_debug ? "on" : "off");
     ESP_LOGI(TAG, "RS485 RX/TX/DE: %d/%d/%d | 115200 8N1",
              CONFIG_JKBMS_RS485_RX_GPIO, CONFIG_JKBMS_RS485_TX_GPIO, CONFIG_JKBMS_RS485_DE_GPIO);
+    ESP_LOGI(TAG, "Config web UI: http://<device-ip>/ (%s)",
+             s_cfg->web_password[0] != '\0' ? "password protected" : "open");
+#if CONFIG_JKBMS_RESET_BUTTON_GPIO >= 0
+    ESP_LOGI(TAG, "Holding the button on GPIO %d for 10 s resets the configuration",
+             CONFIG_JKBMS_RESET_BUTTON_GPIO);
+#endif
 }

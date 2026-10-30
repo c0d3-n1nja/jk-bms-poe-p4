@@ -9,6 +9,8 @@
 #include "sdkconfig.h"
 #include "jkbms.h"
 #include "app_mqtt.h"
+#include "app_ota.h"
+#include "app_config.h"
 
 static const char *TAG = "app_mqtt";
 
@@ -23,11 +25,19 @@ static esp_mqtt_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;
 static bool s_started = false;
 
+/* Effective broker URI after the optional mqtt<->mqtts scheme switch.
+ * Static storage: esp_mqtt_client keeps the POINTER (does not copy the
+ * string), so it must outlive the client. The config struct itself lives
+ * in app_config.c's static area, the same way. */
+static char s_uri_eff[APP_CONFIG_MQTT_URI_MAX + 2];
+
 static char s_dev_id[16];               /* e.g. "ABCDEF123456" */
 static char s_client_id[48];
 static char s_state_topic[96];
 static char s_mqtt_available_topic[96];
 static char s_bms_available_topic[96];
+static char s_ota_topic[96];
+static char s_ota_status_topic[96];
 
 /* Last known BMS state; initially offline until a valid poll succeeds. */
 static volatile bool s_bms_available = false;
@@ -57,6 +67,12 @@ void app_mqtt_publish_bms_available(bool available)
     publish(s_bms_available_topic,
             available ? "online" : "offline",
             1, true);
+}
+
+/** OTA progress/result (retained; see app_ota.h). */
+void app_mqtt_publish_ota_status(const char *status)
+{
+    publish(s_ota_status_topic, status, 1, true);
 }
 /* ------------------------------------------------------------------ */
 /* JSON state message                                                   */
@@ -384,7 +400,7 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             s_connected = true;
-            ESP_LOGI(TAG, "MQTT connected to %s", CONFIG_JKBMS_MQTT_URI);
+            ESP_LOGI(TAG, "MQTT connected to %s", s_uri_eff);
 
             /* Availability of the PoE-P4 -> MQTT connection */
             publish(s_mqtt_available_topic, "online", 1, true);
@@ -401,7 +417,34 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_
             /* Force a fresh full state publish after reconnect */
             s_last_json[0] = '\0';
             s_last_publish_us = 0;
+
+            /* OTA trigger subscription (must renew on every (re)connect) */
+            (void)esp_mqtt_client_subscribe(s_client, s_ota_topic, 1);
             break;
+        case MQTT_EVENT_DATA: {
+            /* OTA trigger: the payload of "<prefix>/ota" is an image URL.
+             * event->data is NOT NUL-terminated - copy + trim first. */
+            if (event->topic_len >= 0 &&
+                (size_t)event->topic_len == strlen(s_ota_topic) &&
+                strncmp(event->topic, s_ota_topic, (size_t)event->topic_len) == 0) {
+                char url[256];
+                int n = event->data_len;
+
+                if (n >= (int)sizeof(url)) {
+                    n = sizeof(url) - 1;
+                }
+                if (n > 0 && event->data != NULL) {
+                    memcpy(url, event->data, (size_t)n);
+                    while (n > 0 && (url[n - 1] == '\n' || url[n - 1] == '\r' ||
+                                     url[n - 1] == ' ' || url[n - 1] == '\t')) {
+                        n--;
+                    }
+                    url[n] = '\0';
+                    (void)app_ota_start_from_url(url);
+                }
+            }
+            break;
+        }
         case MQTT_EVENT_DISCONNECTED:
             s_connected = false;
             ESP_LOGW(TAG, "MQTT disconnected, automatic reconnect is running");
@@ -422,10 +465,28 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_
     }
 }
 
+/**
+ * mqtt<->mqtts scheme handling: an active TLS checkbox upgrades "mqtt://"
+ * to "mqtts://" (same host/port, embedded CA verifies the server), an
+ * inactive checkbox downgrades "mqtts://" accordingly. Other schemes pass
+ * through unchanged (not written back, so the config keeps the user's URI).
+ */
+static void effective_uri(const char *src, bool tls, char *dst, size_t dst_cap)
+{
+    if (tls && strncmp(src, "mqtt://", 7) == 0) {
+        snprintf(dst, dst_cap, "mqtts://%s", src + 7);
+    } else if (!tls && strncmp(src, "mqtts://", 8) == 0) {
+        snprintf(dst, dst_cap, "mqtt://%s", src + 8);
+    } else {
+        snprintf(dst, dst_cap, "%s", src);
+    }
+}
+
 esp_err_t app_mqtt_init(void)
 {
     uint8_t mac[6] = { 0 };
-    esp_mqtt_client_config_t cfg = { 0 };
+    const app_config_t *cfg = app_config_get();
+    esp_mqtt_client_config_t mcfg = { 0 };
 
     ESP_ERROR_CHECK(esp_efuse_mac_get_default(mac));
     snprintf(s_dev_id, sizeof(s_dev_id), "%02X%02X%02X%02X%02X%02X",
@@ -436,34 +497,48 @@ esp_err_t app_mqtt_init(void)
              "%s/available", CONFIG_JKBMS_TOPIC_PREFIX);
     snprintf(s_mqtt_available_topic, sizeof(s_mqtt_available_topic),
              "%s/mqtt_available", CONFIG_JKBMS_TOPIC_PREFIX);
+    snprintf(s_ota_topic, sizeof(s_ota_topic), "%s/ota", CONFIG_JKBMS_TOPIC_PREFIX);
+    snprintf(s_ota_status_topic, sizeof(s_ota_status_topic),
+             "%s/ota/status", CONFIG_JKBMS_TOPIC_PREFIX);
 
-    cfg.broker.address.uri = CONFIG_JKBMS_MQTT_URI;
-    cfg.credentials.client_id = s_client_id;
-    if (CONFIG_JKBMS_MQTT_USERNAME[0] != '\0') {
-        cfg.credentials.username = CONFIG_JKBMS_MQTT_USERNAME;
-        if (CONFIG_JKBMS_MQTT_PASSWORD[0] != '\0') {
-            cfg.credentials.authentication.password = CONFIG_JKBMS_MQTT_PASSWORD;
+    if (cfg->mqtt_uri[0] == '\0') {
+        /* Runtime decision instead of a build option: without a broker URI
+         * there is no MQTT client at all (device only serves the web UI). */
+        ESP_LOGI(TAG, "MQTT not configured - set the broker in the web UI"
+                      " (sending URL updates to '%s' is off as well)", s_ota_topic);
+        return ESP_OK;
+    }
+
+    /* Strings come from the static config area and must never be mutated:
+     * the MQTT client stores pointers to them. */
+    effective_uri(cfg->mqtt_uri, cfg->mqtt_tls, s_uri_eff, sizeof(s_uri_eff));
+    mcfg.broker.address.uri = s_uri_eff;
+    mcfg.credentials.client_id = s_client_id;
+    if (cfg->mqtt_user[0] != '\0') {
+        mcfg.credentials.username = cfg->mqtt_user;
+        if (cfg->mqtt_pass[0] != '\0') {
+            mcfg.credentials.authentication.password = cfg->mqtt_pass;
         }
     }
-#ifdef CONFIG_JKBMS_MQTT_TLS
-    /* Ausgeschaltete bool-Optionen existieren in sdkconfig.h nicht (#ifdef statt if). */
-    if (strncmp(CONFIG_JKBMS_MQTT_URI, "mqtts", 5) == 0) {
-        /* Das zur Build-Zeit eingebettete CA-Zertifikat dient als Verifizierungsquelle. */
-        cfg.broker.verification.certificate = (const char *)server_ca_pem_start;
-        cfg.broker.verification.certificate_len = (size_t)(server_ca_pem_end - server_ca_pem_start);
-        ESP_LOGI(TAG, "MQTTs enabled (CA %u bytes)", (unsigned)cfg.broker.verification.certificate_len);
+    if (strncmp(s_uri_eff, "mqtts://", 8) == 0) {
+        /* The CA certificate embedded at build time is the verification
+         * source for the TLS session. */
+        mcfg.broker.verification.certificate = (const char *)server_ca_pem_start;
+        mcfg.broker.verification.certificate_len =
+            (size_t)(server_ca_pem_end - server_ca_pem_start);
+        ESP_LOGI(TAG, "MQTTs enabled (CA %u bytes)",
+                 (unsigned)mcfg.broker.verification.certificate_len);
     }
-#endif
 
-    cfg.session.keepalive = 30;
-    cfg.session.last_will.topic = s_mqtt_available_topic;
-    cfg.session.last_will.msg = "offline";
-    cfg.session.last_will.qos = 1;
-    cfg.session.last_will.retain = 1;
-    cfg.buffer.size = 4096;
-    cfg.buffer.out_size = 2048;
+    mcfg.session.keepalive = 30;
+    mcfg.session.last_will.topic = s_mqtt_available_topic;
+    mcfg.session.last_will.msg = "offline";
+    mcfg.session.last_will.qos = 1;
+    mcfg.session.last_will.retain = 1;
+    mcfg.buffer.size = 4096;
+    mcfg.buffer.out_size = 2048;
 
-    s_client = esp_mqtt_client_init(&cfg);
+    s_client = esp_mqtt_client_init(&mcfg);
     if (s_client == NULL) {
         return ESP_FAIL;
     }
@@ -478,7 +553,7 @@ void app_mqtt_start(void)
     }
     s_started = true;
     ESP_ERROR_CHECK(esp_mqtt_client_start(s_client));
-    ESP_LOGI(TAG, "MQTT client started (binding: %s, id: %s)", CONFIG_JKBMS_MQTT_URI, s_client_id);
+    ESP_LOGI(TAG, "MQTT client started (broker: %s, id: %s)", s_uri_eff, s_client_id);
 }
 
 void app_mqtt_stop(void)

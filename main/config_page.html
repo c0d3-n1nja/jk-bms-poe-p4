@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JK-BMS Bridge – Konfiguration</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px auto; max-width: 760px; padding: 0 12px; color: #1c2733; }
+  h1 { font-size: 1.35rem; }
+  fieldset { border: 1px solid #c5ccd4; border-radius: 6px; margin: 14px 0; }
+  legend { font-weight: 600; padding: 0 6px; }
+  label { display: block; margin: 8px 0; }
+  input[type=text], input[type=password] { padding: 6px; width: 300px; max-width: 100%;
+    border: 1px solid #9aa4ad; border-radius: 4px; font-size: 0.95rem; }
+  .hint { color: #5b6670; font-size: 0.85rem; margin: 4px 0; }
+  button { padding: 8px 18px; font-size: 1rem; border-radius: 6px; border: 1px solid #2f6fb0;
+    background: #3b78b8; color: #fff; cursor: pointer; margin-right: 8px; }
+  .off { display: none; }
+  .ok { color: #187a2f; font-weight: 600; }
+  .err { color: #b3261e; font-weight: 600; }
+  code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>JK-BMS Bridge – Konfiguration</h1>
+<p id="meta">lade…</p>
+
+<form id="f">
+  <fieldset>
+    <legend>Web-Oberfläche</legend>
+    <label>Neues Web-Passwort (leer = unverändert)
+      <input type="password" name="pw" autocomplete="new-password">
+    </label>
+    <label><input type="checkbox" name="pw_clear"> Vorhandenes Web-Passwort entfernen</label>
+    <p class="hint">Ohne Passwort ist die Weboberfläche im Netzwerk frei zugänglich.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Netzwerk (Ethernet)</legend>
+    <label><input type="checkbox" id="dhcp" name="dhcp"> IP-Adresse per DHCP beziehen</label>
+    <div id="staticfields">
+      <label>IP-Adresse <input type="text" name="ip" maxlength="15" placeholder="192.168.1.50"></label>
+      <label>Netzmaske <input type="text" name="mask" maxlength="15" placeholder="255.255.255.0"></label>
+      <label>Gateway <input type="text" name="gw" maxlength="15" placeholder="192.168.1.1"></label>
+      <label>DNS-Server <input type="text" name="dns" maxlength="15" placeholder="192.168.1.1"></label>
+    </div>
+    <p class="hint off" id="dnshint">Im DHCP-Modus dient dieser DNS-Server als zusätzlicher Fallback,
+      falls der DHCP-Server keinen (brauchbaren) DNS-Lieferant ist.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>MQTT</legend>
+    <label>Broker-URI (mqtt://host:port)
+      <input type="text" name="uri" maxlength="120" placeholder="mqtt://192.168.1.10:1883">
+    </label>
+    <label>Benutzername <input type="text" name="user" maxlength="63" autocomplete="off"></label>
+    <label>MQTT-Passwort (leer = unverändert)
+      <input type="password" name="pass" autocomplete="new-password">
+    </label>
+    <label><input type="checkbox" name="pass_clear"> Vorhandenes MQTT-Passwort entfernen</label>
+    <label><input type="checkbox" name="tls"> TLS verwenden (mqtts, eingebettetes CA-Zertifikat)</label>
+    <p class="hint">Leere Broker-URI schaltet MQTT komplett aus (nur Weboberfläche bleibt aktiv).</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Diagnose</legend>
+    <label><input type="checkbox" name="dbg"> RS485-Debug (Hexdump der Rohdaten im Log)</label>
+  </fieldset>
+
+  <p><button type="submit">Speichern (Gerät startet danach neu)</button>
+     <span id="msg"></span></p>
+</form>
+
+<fieldset>
+  <legend>Firmware-Update</legend>
+  <p>Laufende Firmware: <code id="ver">–</code> aus Partition <code id="part">–</code></p>
+  <p>Standard-Update-URL (Build-Zeit): <code id="ourl">–</code></p>
+  <p><button type="button" id="obtn">Update von der Standard-URL installieren</button>
+     <span id="omsg"></span></p>
+  <p class="hint">Die neue Firmware bootet zunächst „pending verify“ und wird erst nach dem
+     ersten fehlerfreien BMS-Poll bestätigt; bootet sie nicht, rollt der Bootloader
+     automatisch zurück. MQTT-Trigger (<code>&lt;prefix&gt;/ota</code>) funktionieren
+     unabhängig davon mit beliebigen URLs.</p>
+  <p>Status: <code id="ostat" class="status">idle</code></p>
+</fieldset>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const f = document.forms.f;
+const IPV4 = /^(\d{1,3}\.){3}\d{1,3}$/;
+let cfg = null;
+
+function show(id, cls, text) { const el = $(id); el.className = cls; el.textContent = text; }
+
+function upd() {
+  const dhcp = f.elements.dhcp.checked;
+  $("staticfields").className = dhcp ? "off" : "";
+  $("dnshint").className = dhcp ? "hint" : "hint off";
+}
+
+f.elements.dhcp.addEventListener("change", upd);
+f.elements.pw.addEventListener("input", () => {
+  if (f.elements.pw.value) f.elements.pw_clear.checked = false;
+});
+f.elements.pass.addEventListener("input", () => {
+  if (f.elements.pass.value) f.elements.pass_clear.checked = false;
+});
+
+f.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const q = new URLSearchParams();
+  if (f.elements.dhcp.checked) {
+    q.set("dhcp", "on");
+  } else {
+    const v4 = ["ip", "mask", "gw", "dns"].map((n) => f.elements[n].value.trim());
+    if (v4.some((v) => !IPV4.test(v))) {
+      show("msg", "err", "Statisch: alle vier Adressen im Format a.b.c.d angeben.");
+      return;
+    }
+  }
+  if (f.elements.pw_clear.checked) q.set("pw_clear", "on");
+  if (f.elements.pw.value) q.set("pw", f.elements.pw.value);
+  ["ip", "mask", "gw", "dns", "uri"].forEach((n) => q.set(n, f.elements[n].value.trim()));
+  if (f.elements.pass.value) q.set("pass", f.elements.pass.value);
+  if (f.elements.pass_clear.checked) q.set("pass_clear", "on");
+  if (f.elements.tls.checked) q.set("tls", "on");
+  if (f.elements.dbg.checked) q.set("dbg", "on");
+
+  try {
+    const r = await fetch("/save", { method: "POST", body: q });
+    show("msg", r.ok ? "ok" : "err", await r.text());
+  } catch (e) {
+    show("msg", "err", "Anfrage fehlgeschlagen.");
+  }
+});
+
+$("obtn").addEventListener("click", async () => {
+  if (!confirm("Firmware von der Standard-URL laden, installieren und neu starten?")) return;
+  $("obtn").disabled = true;
+  try {
+    const r = await fetch("/ota/install", { method: "POST" });
+    show("omsg", r.ok ? "ok" : "err", await r.text());
+  } catch (e) {
+    show("omsg", "err", "Anfrage fehlgeschlagen.");
+  }
+});
+
+async function load() {
+  try {
+    const r = await fetch("/config.json");
+    if (!r.ok) throw new Error(r.status);
+    cfg = await r.json();
+    f.elements.dhcp.checked = cfg.dhcp;
+    f.elements.ip.value = cfg.ip;   f.elements.mask.value = cfg.mask;
+    f.elements.gw.value = cfg.gw;   f.elements.dns.value = cfg.dns;
+    f.elements.uri.value = cfg.uri; f.elements.user.value = cfg.user;
+    f.elements.tls.checked = cfg.tls;
+    f.elements.dbg.checked = cfg.dbg;
+    $("ver").textContent = cfg.app_version;
+    $("part").textContent = cfg.partition;
+    $("ourl").textContent = cfg.ota_url ? cfg.ota_url : "(nicht gesetzt)";
+    $("ostat").textContent = cfg.ota_status || "idle";
+    $("meta").textContent = "Device-ID: jkbms-" + cfg.device_id +
+      (cfg.pw_set ? " — Web-Passwort aktiv" : " — Web-Oberfläche ohne Passwort");
+    upd();
+  } catch (e) {
+    $("meta").textContent = "Konfiguration konnte nicht geladen werden.";
+  }
+}
+
+load();
+setInterval(() => {
+  fetch("/ota/status").then((r) => r.ok ? r.text() : Promise.reject())
+    .then((t) => { $("ostat").textContent = t || "idle"; })
+    .catch(() => { /* device may be rebooting */ });
+}, 2000);
+</script>
+</body>
+</html>

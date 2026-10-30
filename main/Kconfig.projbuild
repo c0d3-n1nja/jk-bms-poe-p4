@@ -1,31 +1,42 @@
 # JK-BMS -> MQTT Bridge for M5Stack Unit PoE-P4 (U213, legacy revision)
+#
+# Broker address, credentials, TLS, static IP and the RS485 debug switch are
+# configured AT RUNTIME in the built-in web UI (stored in the NVS partition
+# 'cfg', survives OTA). Only the technically fixed values stay here.
 
 menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
 
-    config JKBMS_MQTT_URI
-        string "MQTT broker URI"
-        default "mqtt://homeassistant.local:1883"
+    config JKBMS_OTA_DEFAULT_URL
+        string "Firmware update default URL (http/https)"
+        default ""
         help
-            Scheme + hostname + port of the MQTT broker, e.g.
-            "mqtt://broker.example.com:1883" or "mqtt://192.168.1.10:1883".
-            The hostname is resolved at runtime (DNS), so you can use a dynamic
-            DNS or local name. With "mqtts://..." the embedded CA certificate
-            (see main/ca_cert.pem) is validated.
+            Location of the firmware image for the "install firmware update"
+            button in the web UI, e.g. "http://server/jkbridge.bin". HTTP is
+            allowed (CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP); for https:// the CA
+            certificate from main/ca_cert.pem validates the server.
+            MQTT updates stay independent of this (publish a URL to
+            "<prefix>/ota"). Empty = the web-UI button is disabled.
 
-    config JKBMS_MQTT_USERNAME
-        string "MQTT username (empty = anonymous)"
-        default ""
-
-    config JKBMS_MQTT_PASSWORD
-        string "MQTT password"
-        default ""
+    config JKBMS_RESET_BUTTON_GPIO
+        int "Config-reset button GPIO (hold >= 10 s; -1 = disabled)"
+        range -1 55
+        default 34
+        help
+            Holding this button (idle high, pressed = low) for at least 10 s
+            erases the configuration partition ('cfg': web password, DHCP/
+            static IP, MQTT, debug) and reboots into the defaults: DHCP,
+            web UI without password, MQTT off. Recovery path for a device
+            unreachable via its network settings. The BOOT button of the
+            ESP32-P4 EV boards / M5Stack PoE-P4 sits on GPIO 34 (input-only
+            strap pin; harmless as input). Set -1 to disable the feature.
 
     config JKBMS_TOPIC_PREFIX
         string "MQTT topic prefix"
         default "jkbms"
         help
-            Data is published to "<prefix>/state" (JSON), availability on
-            "<prefix>/available". Home Assistant discovery uses
+            Data is published to "<prefix>/state" (JSON), device availability
+            on "<prefix>/available" (BMS link) and "<prefix>/mqtt_available"
+            (broker connection). Home Assistant discovery uses
             "homeassistant/sensor/<prefix>-<device-id>/...".
 
     config JKBMS_HA_DISCOVERY
@@ -33,21 +44,6 @@ menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
         default y
         help
             Disabled? Then only "<prefix>/state" is published.
-
-    config JKBMS_MQTT_TLS
-        bool "Use TLS if the broker URI uses the mqtts:// scheme"
-        default n
-        help
-            With true, the CA certificate from main/ca_cert.pem becomes
-            mandatory (embedded in the firmware at build time) and is used
-            as the server certificate for MQTTs connections.
-
-    config JKBMS_FALLBACK_DNS
-        string "Fallback DNS server (optional, e.g. 192.168.1.1)"
-        default ""
-        help
-            If DHCP does not provide a (usable) DNS server, you can define one
-            statically here (used for resolving the broker name). Empty = off.
 
     config JKBMS_POLL_INTERVAL_MS
         int "JK-BMS polling interval (ms)"
@@ -112,14 +108,6 @@ menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
             help
                 Actively controlled at 'high' during the transmission,
                 receiver enabled again at 'low'.
-
-        config JKBMS_RS485_DEBUG
-            bool "Log raw RS485 traffic (hexdump of TX/RX bytes)"
-            default n
-            help
-                Hexdumps the polling request and every received byte block.
-                Useful to diagnose wiring (no bytes) vs. baud/protocol issues
-                (bytes arrive but frames do not validate).
     endmenu
 
     menu "Ethernet (internal EMAC + IP101GRI, Unit PoE-P4 U213 pinmap)"

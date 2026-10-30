@@ -9,6 +9,7 @@
 #include "sdkconfig.h"
 #include "lwip/inet.h"
 #include "app_eth.h"
+#include "app_config.h"
 
 static const char *TAG = "app_eth";
 
@@ -17,28 +18,49 @@ static const char *TAG = "app_eth";
 static app_eth_cb_t s_cb = NULL;
 static esp_eth_handle_t s_eth_handle = NULL;
 
-#ifdef CONFIG_JKBMS_FALLBACK_DNS
-static void add_fallback_dns(void)
+/**
+ * Applies the configured static IPv4 settings (config validated at save
+ * time). Must run before the link is started: stopping the DHCP client and
+ * setting the addresses up front means the netif never announces a DHCP
+ * lease. static_dns also becomes the main DNS server in static mode.
+ */
+static void apply_static_ip(esp_netif_t *netif)
 {
+    const app_config_t *cfg = app_config_get();
+    esp_netif_ip_info_t info;
     esp_ip4_addr_t ip4;
     esp_netif_dns_info_t dns;
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+    esp_err_t err = esp_netif_dhcpc_stop(netif);
 
-    if (netif == NULL) {
-        return;
+    /* DHCP has not run yet at this point - "already stopped" is expected. */
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        ESP_LOGE(TAG, "dhcpc_stop failed: %s", esp_err_to_name(err));
     }
-    if (esp_netif_str_to_ip4(CONFIG_JKBMS_FALLBACK_DNS, &ip4) != ESP_OK) {
-        ESP_LOGW(TAG, "Invalid fallback DNS '%s' -> ignored", CONFIG_JKBMS_FALLBACK_DNS);
-        return;
+    memset(&info, 0, sizeof(info));
+    if (esp_netif_str_to_ip4(cfg->static_ip, &ip4) == ESP_OK) {
+        info.ip.addr = ip4.addr;
     }
-    memset(&dns, 0, sizeof(dns));
-    dns.ip.type = IPADDR_TYPE_V4;
-    dns.ip.u_addr.ip4.addr = ip4.addr;
-    if (esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns) == ESP_OK) {
-        ESP_LOGI(TAG, "Fallback DNS " IPSTR " registered", IP2STR(&ip4));
+    if (esp_netif_str_to_ip4(cfg->static_netmask, &ip4) == ESP_OK) {
+        info.netmask.addr = ip4.addr;
     }
+    if (esp_netif_str_to_ip4(cfg->static_gateway, &ip4) == ESP_OK) {
+        info.gw.addr = ip4.addr;
+    }
+    if (esp_netif_set_ip_info(netif, &info) != ESP_OK) {
+        /* Saved configs are validated -> this only happens with a corrupted
+         * NVS. Keep going without an IP; DHCP stays stopped (no lease). */
+        ESP_LOGE(TAG, "static ip_info failed");
+    }
+
+    if (esp_netif_str_to_ip4(cfg->static_dns, &ip4) == ESP_OK) {
+        memset(&dns, 0, sizeof(dns));
+        dns.ip.type = IPADDR_TYPE_V4;
+        dns.ip.u_addr.ip4.addr = ip4.addr;
+        ESP_ERROR_CHECK(esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns));
+    }
+    ESP_LOGI(TAG, "Static IP " IPSTR ", netmask " IPSTR ", gateway " IPSTR " prepared",
+             IP2STR(&info.ip), IP2STR(&info.netmask), IP2STR(&info.gw));
 }
-#endif /* CONFIG_JKBMS_FALLBACK_DNS */
 
 static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -68,14 +90,28 @@ static void on_eth_event(void *arg, esp_event_base_t base, int32_t id, void *dat
 
 static void on_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+    const app_config_t *cfg = app_config_get();
     ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
-    ESP_LOGI(TAG, "DHCP: IP " IPSTR ", netmask " IPSTR ", gateway " IPSTR,
+    ESP_LOGI(TAG, "%s: IP " IPSTR ", netmask " IPSTR ", gateway " IPSTR,
+             cfg->use_dhcp ? "DHCP" : "Static IP",
              IP2STR(&ev->ip_info.ip), IP2STR(&ev->ip_info.netmask), IP2STR(&ev->ip_info.gw));
-#ifdef CONFIG_JKBMS_FALLBACK_DNS
-    if (CONFIG_JKBMS_FALLBACK_DNS[0] != '\0') {
-        add_fallback_dns();
+    if (cfg->use_dhcp && cfg->static_dns[0] != '\0') {
+        /* DHCP module: optional secondary DNS (fills the gap if the lease
+         * has no or a useless resolver). */
+        esp_ip4_addr_t ip4;
+        esp_netif_dns_info_t dns;
+        esp_netif_t *netif = ev->esp_netif ? ev->esp_netif
+                                           : esp_netif_get_handle_from_ifkey("ETH_DEF");
+
+        if (esp_netif_str_to_ip4(cfg->static_dns, &ip4) == ESP_OK) {
+            memset(&dns, 0, sizeof(dns));
+            dns.ip.type = IPADDR_TYPE_V4;
+            dns.ip.u_addr.ip4.addr = ip4.addr;
+            if (esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns) == ESP_OK) {
+                ESP_LOGI(TAG, "Fallback DNS " IPSTR " registered", IP2STR(&ip4));
+            }
+        }
     }
-#endif
     if (s_cb) {
         s_cb(APP_ETH_EVENT_GOT_IP);
     }
@@ -110,6 +146,12 @@ esp_err_t app_eth_init(app_eth_cb_t cb)
 
     esp_eth_netif_glue_handle_t glue = esp_eth_new_netif_glue(s_eth_handle);
     ETH_CHECK(esp_netif_attach(netif, glue), "esp_netif_attach failed");
+
+    /* Static mode: stop the DHCP client and pin the addresses BEFORE the
+     * link starts. Defaults (DHCP) need no preparation. */
+    if (!app_config_get()->use_dhcp) {
+        apply_static_ip(netif);
+    }
 
     ETH_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &on_eth_event, NULL), "eth handler failed");
     ETH_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &on_got_ip, NULL), "ip handler failed");
