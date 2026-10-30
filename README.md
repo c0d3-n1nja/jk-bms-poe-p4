@@ -156,7 +156,7 @@ des Betriebs unveraendert (keine Pointer-Rennen im MQTT-Client).
 Web-UI eintragen (alle Buildzeit-MQTT-Optionen sind entfallen; dafuer ueberlebt die Konfig
 ab jetzt jedes Update).
 
-**Werksreset (Recovery)**: Den BOOT-Knopf des Boards (default **GPIO34**, siehe
+**Werksreset (Recovery)**: Den BOOT-Knopf des Boards (default **GPIO45**, siehe
 `CONFIG_JKBMS_RESET_BUTTON_GPIO`, -1 = aus) mindestens **10 Sekunden** gedrueckt halten.
 Das loescht die Partition `cfg` komplett (Web-Passwort, IP-Einstellungen, MQTT, Debug) und
 startet neu in die Defaults: DHCP, Web-UI ohne Passwort, MQTT aus. Das ist der Weg zurueck,
@@ -177,7 +177,7 @@ Alle Optionen unter **"Component config -> JK-BMS to MQTT Bridge (M5Stack Unit P
 | `JKBMS_NO_RESPONSE_TIMEOUT_MS` | 30000 | Timeout bis "BMS offline" meldet |
 | `JKBMS_MODBUS_SLAVE_ADDR` | 1 | Modbus-RTU-Adresse des BMS (muss zum DIP-Switch passen) |
 | `JKBMS_OTA_DEFAULT_URL` | (leer) | Firmware-URL fuer den Web-UI-Update-Button; leer = Button deaktiviert (MQTT-Trigger wirkt weiterhin) |
-| `JKBMS_RESET_BUTTON_GPIO` | 34 | GPIO des Konfig-Reset-Knopfs (>= 10 s halten); -1 = aus |
+| `JKBMS_RESET_BUTTON_GPIO` | 45 | GPIO des Konfig-Reset-Knopfs (>= 10 s halten); -1 = aus |
 | RS485: `JKBMS_RS485_UART_NUM` / `RX` / `TX` / `DE` | 1 / 20 / 19 / 21 | UART + Pins (Pinmap wie oben) |
 | Ethernet: `JKBMS_ETH_MDC/MDIO/PHY_RST/PHY_ADDR` | 31 / 52 / 51 / 1 | Pinmap des U213-Boards |
 
