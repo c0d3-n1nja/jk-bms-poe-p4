@@ -31,6 +31,14 @@ CONFIG_JKBMS_MODBUS_SLAVE_ADDR=1
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
 
+# ---- TEMPORARY insecure TLS (remove together with this section!) ----
+# The embedded ca_cert.pem is still a placeholder, so OTA (https) and MQTTS
+# skip server certificate validation until it contains the real CA chain.
+# Once replaced: remove these two lines, do a fullclean build, and re-enable
+# the CA attach in main/app_ota.c / main/app_mqtt.c.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+
 # ---- RS485 (UART1, Software-DE) ----
 CONFIG_JKBMS_RS485_UART_NUM=1
 CONFIG_JKBMS_RS485_RX_GPIO=20

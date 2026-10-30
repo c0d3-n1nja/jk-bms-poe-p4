@@ -239,7 +239,32 @@ Zwei Ausloeser, gleicher Transport:
    - `idf.py build` -> `cd build` -> `python -m http.server 8000`
    - `mosquitto_pub -h <broker> -u <user> -P <pass> -t jkbms/ota -m "http://<PC-IP>:8000/jkbms_mqtt_poe_p4.bin"`
 2. **Web-UI-Button**: laedt von der Buildzeit-URL `CONFIG_JKBMS_OTA_DEFAULT_URL`
-   (default leer; `http://` ist erlaubt, `https://` validiert das eingebettete `ca_cert.pem`).
+   (default leer; `http://` ist erlaubt, siehe unten zum TLS-Verhalten).
+
+### TLS-Server-Verifizierung aktuell DEAKTIVIERT (temporär, unsicher!)
+
+Das eingebettete `ca_cert.pem` ist bislang ein **Platzhalter** (kein echtes
+Zertifikat). Ein https-OTA-Versuch bricht deshalb beim TLS-Verbindungsaufbau
+ab (`mbedtls_x509_crt_parse of CA cert returned -0x112C`, also
+`PEM_INVALID_DATA + BASE64_INVALID_CHARACTER` - der Dateiinhalt ist gar kein
+PEM-Base64). Bis eine echte CA-Kette eingebettet ist, validiert die Firmware
+TLS-Serverzertifikate **nicht** (Verschluesselung bleibt aktiv, die
+Server-Identitaet wird aber nicht geprueft - MITM moeglich!):
+
+- Erlaubt via `CONFIG_ESP_TLS_INSECURE=y` +
+  `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y` (sdkconfig.defaults, beide Dateien
+  sind mit "TEMPORARY" markiert).
+- OTA (https und http) und MQTTS laufen dadurch ohne Cert-Pruefung; beide
+  Codepfade loggen beim Start eine `DISABLED`-Warnung.
+
+**Wenn wieder sicher:** echtes Server-Zertifikat bzw. die Signier-Kette
+(die Reihenfolge im `ca_cert.pem`: Serverzertifikat + Intermediate + Root -
+oder nur Root/Intermediate, wenn der Server sie mitschickt; Beispiel:
+`openssl s_client -showcerts -connect github.com:443 </dev/null 2>/dev/null |
+sed -n '/-----BEGIN CERT/,/-----END CERT/p' > main/ca_cert.pem`), dann
+sdkconfig.defaults die zwei `ESP_TLS_*`-Zeilen entfernen, `idf.py fullclean`
+und beide `DISABLED`-`#if`-Blocks in `main/app_ota.c` / `main/app_mqtt.c`
+durch die Attach-Variante ersetzen (stehen dort "TEMPORARY" markiert).
 
 Das Ergebnis landet unter `<prefix>/ota/status` (retained): `"downloading 30%"`,
 `"success, rebooting"` oder `"failed: ..."`; derselbe Text steht in der Web-UI.
