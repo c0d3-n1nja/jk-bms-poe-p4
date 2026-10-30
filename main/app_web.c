@@ -310,8 +310,14 @@ static esp_err_t h_save(httpd_req_t *req)
     }
     body[len] = '\0';
 
-    /* Start from the current values so empty password fields mean "keep". */
+    /* Start from the current values so empty password fields mean "keep".
+     * Checkboxes are reset first: an unchecked box sends NO key at all, so
+     * "absent" must mean false - otherwise unchecking (debug, TLS, switching
+     * to static IP) could never revert a previously stored true. */
     new_c = *cur;
+    new_c.use_dhcp = false;
+    new_c.mqtt_tls = false;
+    new_c.rs485_debug = false;
     if (!parse_form(body, &new_c, &err) ||
         (new_c.use_dhcp == false &&
          (!app_config_valid_ipv4(new_c.static_ip) ||

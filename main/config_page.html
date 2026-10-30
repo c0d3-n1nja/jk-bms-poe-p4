@@ -110,9 +110,7 @@ f.elements.pass.addEventListener("input", () => {
 f.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const q = new URLSearchParams();
-  if (f.elements.dhcp.checked) {
-    q.set("dhcp", "on");
-  } else {
+  if (!f.elements.dhcp.checked) {
     const v4 = ["ip", "mask", "gw", "dns"].map((n) => f.elements[n].value.trim());
     if (v4.some((v) => !IPV4.test(v))) {
       show("msg", "err", "Statisch: alle vier Adressen im Format a.b.c.d angeben.");
@@ -120,12 +118,13 @@ f.addEventListener("submit", async (ev) => {
     }
   }
   if (f.elements.pw_clear.checked) q.set("pw_clear", "on");
-  if (f.elements.pw.value) q.set("pw", f.elements.pw.value);
-  ["ip", "mask", "gw", "dns", "uri"].forEach((n) => q.set(n, f.elements[n].value.trim()));
-  if (f.elements.pass.value) q.set("pass", f.elements.pass.value);
+  if (f.elements.pw.value.trim()) q.set("pw", f.elements.pw.value.trim());
+  ["ip", "mask", "gw", "dns", "uri", "user"].forEach((n) => q.set(n, f.elements[n].value.trim()));
+  if (f.elements.pass.value.trim()) q.set("pass", f.elements.pass.value.trim());
   if (f.elements.pass_clear.checked) q.set("pass_clear", "on");
-  if (f.elements.tls.checked) q.set("tls", "on");
-  if (f.elements.dbg.checked) q.set("dbg", "on");
+  q.set("dhcp", f.elements.dhcp.checked ? "on" : "0");
+  q.set("tls", f.elements.tls.checked ? "on" : "0");
+  q.set("dbg", f.elements.dbg.checked ? "on" : "0");
 
   try {
     const r = await fetch("/save", { method: "POST", body: q });

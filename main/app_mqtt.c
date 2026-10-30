@@ -482,6 +482,17 @@ static void effective_uri(const char *src, bool tls, char *dst, size_t dst_cap)
     }
 }
 
+/** True if the string contains a space/tab/CR/LF (auth footgun detector). */
+static bool contains_whitespace(const char *s)
+{
+    for (; *s != '\0'; s++) {
+        if (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
+            return true;
+        }
+    }
+    return false;
+}
+
 esp_err_t app_mqtt_init(void)
 {
     uint8_t mac[6] = { 0 };
@@ -528,6 +539,18 @@ esp_err_t app_mqtt_init(void)
             (size_t)(server_ca_pem_end - server_ca_pem_start);
         ESP_LOGI(TAG, "MQTTs enabled (CA %u bytes)",
                  (unsigned)mcfg.broker.verification.certificate_len);
+    }
+
+    /* Auth troubleshooting: what is actually attached to the CONNECT
+     * (never the password content, only its length/shape). */
+    if (cfg->mqtt_user[0] != '\0') {
+        ESP_LOGI(TAG, "MQTT auth: user '%s', password %u chars",
+                 cfg->mqtt_user, (unsigned)strlen(cfg->mqtt_pass));
+        if (contains_whitespace(cfg->mqtt_user) || contains_whitespace(cfg->mqtt_pass)) {
+            ESP_LOGW(TAG, "Credentials contain whitespace - re-enter user/password in the web UI");
+        }
+    } else {
+        ESP_LOGI(TAG, "MQTT auth: anonymous");
     }
 
     mcfg.session.keepalive = 30;
