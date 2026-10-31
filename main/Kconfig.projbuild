@@ -18,17 +18,19 @@ menu "JK-BMS to MQTT Bridge (M5Stack Unit PoE-P4)"
             "<prefix>/ota"). Empty = the web-UI button is disabled.
 
     config JKBMS_RESET_BUTTON_GPIO
-        int "Config-reset button GPIO (hold >= 10 s; -1 = disabled)"
+        int "Config-reset button GPIO (10 clicks within 15 s; -1 = disabled)"
         range -1 55
         default 45
         help
-            Holding this button (idle high, pressed = low) for at least 10 s
-            erases the configuration partition ('cfg': web password, DHCP/
-            static IP, MQTT, debug) and reboots into the defaults: DHCP,
-            web UI without password, MQTT off. Recovery path for a device
-            unreachable via its network settings. The BOOT button of the
-            ESP32-P4 EV boards / M5Stack PoE-P4 sits on GPIO 34 (input-only
-            strap pin; harmless as input). Set -1 to disable the feature.
+            10 short clicks within 15 s (at most 2 s between two clicks,
+            each click at most 800 ms) erase the configuration partition
+            ('cfg': web password, DHCP/static IP, MQTT, debug) and reboot
+            into the defaults: DHCP, web UI without password, MQTT off.
+            Recovery path for a device unreachable via its network
+            settings. The button is idle high, pressed = low. The BOOT
+            button of the ESP32-P4 EV boards / M5Stack PoE-P4 sits on
+            GPIO 34 (input-only strap pin; harmless as input).
+            Set -1 to disable the feature.
 
     config JKBMS_VERSION_URL
         string "URL of the 'version' text file for the update check (http/https)"

@@ -23,6 +23,7 @@ extern const unsigned char server_ca_pem_end[]   asm("_binary_ca_cert_pem_end");
 
 #define STATE_JSON_BUF   3072
 #define DISCOVERY_BUF    768
+#define AVAIL_REASSERT_MS 60000 /* reassert retained availability topics while connected */
 
 static esp_mqtt_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;
@@ -49,6 +50,14 @@ static char s_json[STATE_JSON_BUF];
 static char s_last_json[STATE_JSON_BUF];  /* last successfully published state */
 static int64_t s_last_publish_us = 0;
 
+/*
+ * Belt-and-braces against everything that can leave a stale retained
+ * "offline" in the broker (interrupted connect, delayed LWT flush, broker
+ * restarts): while the connection is up, the availability topics are
+ * reasserted periodically - DSML reconnects can only cause short flaps.
+ */
+static int64_t s_last_avail_assert_us = 0;
+
 /* ------------------------------------------------------------------ */
 
 static bool publish(const char *topic, const char *data, int qos, bool retain)
@@ -56,6 +65,9 @@ static bool publish(const char *topic, const char *data, int qos, bool retain)
     if (s_client == NULL || !s_connected) {
         return false;
     }
+    /* Len 0 with non-NULL data is fine: esp-mqtt derives the payload
+     * length via strlen() (documented in mqtt_client.c, "#if (len <= 0 &&
+     * data != NULL) len = strlen(data)"). All payloads here are strings. */
     int msg_id = esp_mqtt_client_publish(s_client, topic, data, 0, qos, retain);
     if (msg_id < 0) {
         ESP_LOGW(TAG, "Publish to '%s' failed (client busy/offline)", topic);
@@ -269,6 +281,14 @@ void app_mqtt_publish_state(const jkbms_data_t *data, bool link_up)
     build_json(data, link_up, s_json, sizeof(s_json));
 
     now = esp_timer_get_time();
+    /* Periodic availability reassert (belt-and-braces; see above). Runs
+     * before the change-detection gate so nothing can skip it. */
+    if (now - s_last_avail_assert_us >= AVAIL_REASSERT_MS * 1000LL) {
+        publish(s_mqtt_available_topic, "online", 1, true);
+        publish(s_bms_available_topic,
+                s_bms_available ? "online" : "offline", 1, true);
+        s_last_avail_assert_us = now;
+    }
     unchanged = s_last_json[0] != '\0' && strcmp(s_last_json, s_json) == 0;
     heartbeat_due = now - s_last_publish_us >=
                     (int64_t)CONFIG_JKBMS_STATE_HEARTBEAT_MS * 1000;
@@ -473,6 +493,9 @@ static void mqtt_event_handler(void *args, esp_event_base_t base, int32_t event_
             /* Force a fresh full state publish after reconnect */
             s_last_json[0] = '\0';
             s_last_publish_us = 0;
+
+            /* Baseline for the periodic availability reassert */
+            s_last_avail_assert_us = esp_timer_get_time();
 
             /* OTA trigger subscription (must renew on every (re)connect) */
             (void)esp_mqtt_client_subscribe(s_client, s_ota_topic, 1);

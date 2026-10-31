@@ -185,7 +185,8 @@ web UI (all build-time MQTT options have been removed; in return, the config now
 survives every update).
 
 **Factory reset (recovery)**: Press the BOOT button of the board (default **GPIO45**, see
-`CONFIG_JKBMS_RESET_BUTTON_GPIO`, -1 = off) **10 times within 15 seconds**.
+`CONFIG_JKBMS_RESET_BUTTON_GPIO`, -1 = off) **10 times within 15 seconds** (max.
+2 s between two presses, each press at most 800 ms).
 This erases the `cfg` partition completely (web password, IP settings, MQTT, debug,
 manual update URL) and
 restarts into the defaults: DHCP, web UI without password, MQTT off. This is the way back
@@ -209,7 +210,7 @@ All options are under **"Component config → JK-BMS to MQTT Bridge (M5Stack Uni
 | `JKBMS_OTA_DEFAULT_URL` | (empty) | Default firmware URL for the web UI update button (used if no manual URL is set) |
 | `JKBMS_VERSION_URL` | (empty) | URL of the "version" text file for the update check; empty = derive from the active update URL (replace the last path segment with `version`) |
 | `JKBMS_VERSION_CHECK_INTERVAL_S` | 21600 | Automatic update check every x seconds (21600 = 6 h); 0 = manual only via the web UI or after each restart |
-| `JKBMS_RESET_BUTTON_GPIO` | 45 | GPIO of the config reset button (press 10 times in a row); -1 = off |
+| `JKBMS_RESET_BUTTON_GPIO` | 45 | GPIO of the config reset button (10 presses in a row, 15 s window); -1 = off |
 | RS485: `JKBMS_RS485_UART_NUM` / `RX` / `TX` / `DE` | 1 / 20 / 19 / 21 | UART + pins (pin map as above) |
 | Ethernet: `JKBMS_ETH_MDC/MDIO/PHY_RST/PHY_ADDR` | 31 / 52 / 51 / 1 | Pin map of the U213 board |
 
@@ -385,5 +386,6 @@ OTA (the partition does not appear in the app area).
   only work if an mDNS base is available - when in doubt, use a real DNS name,
   the broker's IP, or the DNS field of the web UI (fallback in DHCP mode).
 - **Device misconfigured?** (static IP no longer fits / web password forgotten):
-  hold the BOOT button for 10 seconds → factory reset of the config (see above). Afterwards
-  it is reachable again via its DHCP address.
+  press the BOOT/user button 10 times in a row (within 15 s, max. 2 s gap) →
+  factory reset of the config (see above). Afterwards it is reachable again
+  via its DHCP address.
